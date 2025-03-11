@@ -19,17 +19,21 @@ from geometry_msgs.msg import Twist
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid
+import tf2_ros
+from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 import numpy as np
 import math
 import cmath
 import time
+from mapNode import MapNode
+import matplotlib.pyplot as plt
 
 # constants
 rotatechange = 0.1
-speedchange = 0.05
+speedchange = 0.2
 occ_bins = [-1, 0, 100, 101]
 stop_distance = 0.25
-front_angle = 30
+front_angle = 10
 front_angles = range(-front_angle,front_angle+1,1)
 scanfile = 'lidar.txt'
 mapfile = 'map.txt'
@@ -78,6 +82,8 @@ class AutoNav(Node):
         self.roll = 0
         self.pitch = 0
         self.yaw = 0
+        self.coords = (0,0)
+        self.path = [] 
         
         # create subscription to track occupancy
         self.occ_subscription = self.create_subscription(
@@ -96,13 +102,38 @@ class AutoNav(Node):
             qos_profile_sensor_data)
         self.scan_subscription  # prevent unused variable warning
         self.laser_range = np.array([])
+        # Create a tf2 buffer and listener
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+
+        #interactive image
+        plt.ion()
+        self.fig, self.ax = plt.subplots()
+        self.image = self.ax.imshow(self.occdata, cmap='gray', vmin=0, vmax=1)
+        plt.colorbar(self.image, ax=self.ax)
+        plt.title("Occupancy Grid with Path")
 
 
     def odom_callback(self, msg):
-        # self.get_logger().info('In odom_callback')
         orientation_quat =  msg.pose.pose.orientation
         self.roll, self.pitch, self.yaw = euler_from_quaternion(orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w)
+        
+        # Extract x and y coordinates
+        self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
+        # Transform odometry coordinates to map frame
+        # try:
+        #     transform = self.tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
+        #     map_x, map_y = self.transform_coordinates(self.x, self.y, transform)
+        #     self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
+        # except tf2_ros.LookupException as e:
+        #     self.get_logger().error(f'Transform lookup failed: {e}')
+
+    def transform_coordinates(self, x, y, transform):
+        # Apply the transformation to the coordinates
+        transformed_x = transform.transform.translation.x + x * math.cos(transform.transform.rotation.z) - y * math.sin(transform.transform.rotation.z)
+        transformed_y = transform.transform.translation.y + x * math.sin(transform.transform.rotation.z) + y * math.cos(transform.transform.rotation.z)
+        return transformed_x, transformed_y
 
     def occ_callback(self, msg):
         # self.get_logger().info('In occ_callback')
@@ -188,30 +219,6 @@ class AutoNav(Node):
         self.publisher_.publish(twist)
 
 
-    def pick_direction(self):
-        # self.get_logger().info('In pick_direction')
-        if self.laser_range.size != 0:
-            # use nanargmax as there are nan's in laser_range added to replace 0's
-            lr2i = np.nanargmax(self.laser_range)
-            self.get_logger().info('Picked direction: %d %f m' % (lr2i, self.laser_range[lr2i]))
-        else:
-            lr2i = 0
-            self.get_logger().info('No data!')
-
-        # rotate to that direction
-        self.rotatebot(float(lr2i))
-
-        # start moving
-        self.get_logger().info('Start moving')
-        twist = Twist()
-        twist.linear.x = speedchange
-        twist.angular.z = 0.0
-        # not sure if this is really necessary, but things seem to work more
-        # reliably with this
-        time.sleep(1)
-        self.publisher_.publish(twist)
-
-
     def stopbot(self):
         self.get_logger().info('In stopbot')
         # publish to cmd_vel to move TurtleBot
@@ -220,6 +227,74 @@ class AutoNav(Node):
         twist.angular.z = 0.0
         # time.sleep(1)
         self.publisher_.publish(twist)
+    
+    def max_pooling_2d(arr, pool_size=(5, 5), stride=(5, 5)):
+    # Create a view of the array with sliding windows
+        windows = np.lib.stride_tricks.sliding_window_view(arr, pool_size)
+        
+        # Apply max pooling over the windows
+        pooled = windows.max(axis=(2, 3))
+        
+        # Stride the result if necessary
+        if stride != pool_size:
+            pooled = pooled[::stride[0], ::stride[1]]
+    
+        return pooled
+
+    def plan_route(self):
+        # Get the occupancy grid
+        occ_grid = self.occdata
+        # Apply max pooling to the occupancy grid
+        occ_grid_pooled = self.max_pooling_2d(occ_grid, pool_size=(5, 5), stride=(5, 5))
+        # find where the turtlebot lies in the pooled occupancy_grid
+        pooled_x, pooled_y 
+        try:
+            transform = self.tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
+            map_x, map_y = self.transform_coordinates(self.x, self.y, transform)
+            pooled_x, pooled_y = int(map_x / 5), int(map_y / 5)
+            self.get_logger().info(f'Pooled coordinates: x={pooled_x}, y={pooled_y}')
+            self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
+        except tf2_ros.LookupException as e:
+            self.get_logger().error(f'Transform lookup failed: {e}')
+
+        # Create a start node
+        start = MapNode(pooled_x, pooled_y)
+        frontier = [start]
+        visited = set()
+        current_node = start
+        while len(frontier) > 0:
+            current_node = frontier.pop(0)
+            if current_node in visited:
+                continue
+            visited.add(current_node)
+            if occ_grid_pooled[current_node.x, current_node.y] == -1:
+                break
+            neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    frontier.append(neighbor)
+                    neighbor.parent = current_node
+        path = []
+        while current_node is not None:
+            path.append(current_node)
+            current_node = current_node.parent
+        path.reverse()
+        #self.visualize_path(path, pooled_occ_grid)
+        return path
+    
+    def visualize_path(self, path, pooled_occ_grid):
+        # Create a copy of the occupancy grid
+        occ_grid_copy = np.copy(pooled_occ_grid)
+        # Mark the path on the occupancy grid
+        for node in path:
+            occ_grid_copy[node.x, node.y] = 2
+
+        self.image.set_data(occ_grid_copy)
+        # Redraw the plot
+        plt.draw()
+        plt.pause(0.01)  # Allow the GUI event loop to update
+
+
 
 
     def mover(self):
@@ -229,23 +304,15 @@ class AutoNav(Node):
 
             # find direction with the largest distance from the Lidar,
             # rotate to that direction, and start moving
-            self.pick_direction()
+
+            #create route
+            
+
 
             while rclpy.ok():
-                if self.laser_range.size != 0:
-                    # check distances in front of TurtleBot and find values less
-                    # than stop_distance
-                    lri = (self.laser_range[front_angles]<float(stop_distance)).nonzero()
-                    # self.get_logger().info('Distances: %s' % str(lri))
+                
+                self.plan_route()
 
-                    # if the list is not empty
-                    if(len(lri[0])>0):
-                        # stop moving
-                        self.stopbot()
-                        # find direction with the largest distance from the Lidar
-                        # rotate to that direction
-                        # start moving
-                        self.pick_direction()
                     
                 # allow the callback functions to run
                 rclpy.spin_once(self)
