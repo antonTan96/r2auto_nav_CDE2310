@@ -25,8 +25,10 @@ import numpy as np
 import math
 import cmath
 import time
-from mapNode import MapNode
+from auto_nav.mapNode import MapNode
 import matplotlib.pyplot as plt
+import torch
+import torch.nn.functional as F
 
 # constants
 rotatechange = 0.1
@@ -92,7 +94,9 @@ class AutoNav(Node):
             self.occ_callback,
             qos_profile_sensor_data)
         self.occ_subscription  # prevent unused variable warning
-        self.occdata = np.array([])
+        self.occdata = torch.empty((0,0))
+        self.map_res = 0
+        self.map_origin=0
         
         # create subscription to track lidar
         self.scan_subscription = self.create_subscription(
@@ -104,12 +108,12 @@ class AutoNav(Node):
         self.laser_range = np.array([])
         # Create a tf2 buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer,self)
 
         #interactive image
         plt.ion()
         self.fig, self.ax = plt.subplots()
-        self.image = self.ax.imshow(self.occdata, cmap='gray', vmin=0, vmax=1)
+        self.image = self.ax.imshow(np.zeros((1,1)), cmap='gray')
         plt.colorbar(self.image, ax=self.ax)
         plt.title("Occupancy Grid with Path")
 
@@ -146,13 +150,19 @@ class AutoNav(Node):
         # log the info
         # self.get_logger().info('Unmapped: %i Unoccupied: %i Occupied: %i Total: %i' % (occ_counts[0][0], occ_counts[0][1], occ_counts[0][2], total_bins))
 
-        # make msgdata go from 0 instead of -1, reshape into 2D
-        oc2 = msgdata + 1
+        # get map resolution
+        self.map_res = msg.info.resolution
+        # get map origin struct has fields of x, y, and z
+        self.map_origin = msg.info.origin.position
+
+        #reshape into 2D
+        oc2 = msgdata 
         # reshape to 2D array using column order
-        # self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width,order='F'))
-        self.occdata = np.uint8(oc2.reshape(msg.info.height,msg.info.width))
+        
+        self.occdata = torch.tensor(oc2).reshape(msg.info.height, msg.info.width)
+
         # print to file
-        # np.savetxt(mapfile, self.occdata)
+        np.savetxt(mapfile, self.occdata)
 
 
     def scan_callback(self, msg):
@@ -228,36 +238,36 @@ class AutoNav(Node):
         # time.sleep(1)
         self.publisher_.publish(twist)
     
-    def max_pooling_2d(arr, pool_size=(5, 5), stride=(5, 5)):
-    # Create a view of the array with sliding windows
-        windows = np.lib.stride_tricks.sliding_window_view(arr, pool_size)
-        
-        # Apply max pooling over the windows
-        pooled = windows.max(axis=(2, 3))
-        
-        # Stride the result if necessary
-        if stride != pool_size:
-            pooled = pooled[::stride[0], ::stride[1]]
-    
-        return pooled
 
     def plan_route(self):
         # Get the occupancy grid
         occ_grid = self.occdata
+        #return if empty
+        if occ_grid.shape[0] == 0:
+            return
         # Apply max pooling to the occupancy grid
-        occ_grid_pooled = self.max_pooling_2d(occ_grid, pool_size=(5, 5), stride=(5, 5))
+        occ_grid = occ_grid.reshape(1,1,occ_grid.shape[0], occ_grid.shape[1])
+        occ_grid_pooled = F.max_pool2d(occ_grid, 5,5).reshape(occ_grid.shape[2]//5, occ_grid.shape[3]//5)
         # find where the turtlebot lies in the pooled occupancy_grid
-        pooled_x, pooled_y 
+        pooled_x = -1
+        pooled_y = -1
         try:
-            transform = self.tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
-            map_x, map_y = self.transform_coordinates(self.x, self.y, transform)
-            pooled_x, pooled_y = int(map_x / 5), int(map_y / 5)
-            self.get_logger().info(f'Pooled coordinates: x={pooled_x}, y={pooled_y}')
-            self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
-        except tf2_ros.LookupException as e:
+            timeout = rclpy.time.Duration(seconds=2.0)  # Wait up to 2 seconds
+            if self.tf_buffer.can_transform('map', 'base_link', rclpy.time.Time(), timeout):
+                transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                map_x= (transform.transform.translation.x - self.map_origin.x)/self.map_res
+                map_y= (transform.transform.translation.y - self.map_origin.y)/self.map_res
+                pooled_x = int(map_x / 5)
+                pooled_y = int(map_y / 5)
+                self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
+            else:
+                self.get_logger().warn('Transform from "map" to "base_link" not available yet. Retrying...')
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
             self.get_logger().error(f'Transform lookup failed: {e}')
 
         # Create a start node
+        if pooled_x == -1 or pooled_y == -1:
+            return
         start = MapNode(pooled_x, pooled_y)
         frontier = [start]
         visited = set()
@@ -267,6 +277,7 @@ class AutoNav(Node):
             if current_node in visited:
                 continue
             visited.add(current_node)
+            #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
             if occ_grid_pooled[current_node.x, current_node.y] == -1:
                 break
             neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
@@ -279,7 +290,7 @@ class AutoNav(Node):
             path.append(current_node)
             current_node = current_node.parent
         path.reverse()
-        #self.visualize_path(path, pooled_occ_grid)
+        self.visualize_path(path, occ_grid_pooled)
         return path
     
     def visualize_path(self, path, pooled_occ_grid):
@@ -287,8 +298,9 @@ class AutoNav(Node):
         occ_grid_copy = np.copy(pooled_occ_grid)
         # Mark the path on the occupancy grid
         for node in path:
-            occ_grid_copy[node.x, node.y] = 2
-
+            occ_grid_copy[node.x, node.y] = 100
+        #save the copy
+        np.savetxt('pooled_map.txt', occ_grid_copy)
         self.image.set_data(occ_grid_copy)
         # Redraw the plot
         plt.draw()
@@ -306,19 +318,20 @@ class AutoNav(Node):
             # rotate to that direction, and start moving
 
             #create route
-            
 
 
             while rclpy.ok():
                 
-                self.plan_route()
-
+                path = self.plan_route()
+                if path is not None:
+                    self.get_logger().info('Path starts from: %s' % path[0])
+                
                     
                 # allow the callback functions to run
                 rclpy.spin_once(self)
 
-        except Exception as e:
-            print(e)
+        # except Exception as e:
+        #    print(e)
         
         # Ctrl-c detected
         finally:

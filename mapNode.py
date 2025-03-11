@@ -12,6 +12,9 @@ class MapNode():
 
     def __hash__(self):
         return hash((self.x, self.y))
+    
+    def __str__(self):
+        return "X: "+str(self.x)+" Y: "+str(self.y)
 
     def generate_neighbors(self,max_x,max_y):
         if len(self.neighbors)==0:
@@ -20,13 +23,13 @@ class MapNode():
                     if self.x>0:
                         self.neighbors.append(MapNode(self.x-1,self.y))
                 if i==1:
-                    if self.x<max_x:
+                    if self.x<max_x-1:
                         self.neighbors.append(MapNode(self.x+1,self.y))
                 if i==2:
                     if self.y>0:
                         self.neighbors.append(MapNode(self.x,self.y-1))
                 if i==3:
-                    if self.y<max_y:
+                    if self.y<max_y-1:
                         self.neighbors.append(MapNode(self.x,self.y+1))
             return self.neighbors
         else:
