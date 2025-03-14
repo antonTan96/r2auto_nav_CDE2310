@@ -31,15 +31,13 @@ class Scanner(Node):
         self.subscription  # prevent unused variable warning
 
     def listener_callback(self, msg):
-        # create numpy array
-        laser_range = np.array(msg.ranges)
-        # replace 0's with nan
-        laser_range[laser_range==0] = np.nan
-        # find index with minimum value
-        lr2i = np.nanargmin(laser_range)
-
-        # log the info
-        self.get_logger().info('Shortest distance at %i degrees' % lr2i)
+        angle_min_deg = msg.angle_min * 180.0 / 3.14159 
+        angle_max_deg = msg.angle_max * 180.0 / 3.14159
+        scan_range = angle_max_deg - angle_min_deg
+        
+        self.get_logger().info(f"Scan Range: {scan_range}")
+        self.get_logger().info(f"angle_min: {angle_min_deg}, angle_max: {angle_max_deg}")
+        self.get_logger().info(f"Number of readings: {len(msg.ranges)}")
 
 
 def main(args=None):
