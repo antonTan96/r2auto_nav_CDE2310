@@ -40,6 +40,7 @@ front_angles = range(-front_angle,front_angle+1,1)
 scanfile = 'lidar.txt'
 mapfile = 'map.txt'
 
+
 # code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
 def euler_from_quaternion(x, y, z, w):
     """
@@ -86,6 +87,8 @@ class AutoNav(Node):
         self.yaw = 0
         self.coords = (0,0)
         self.path = [] 
+        self.nextcoords = MapNode(0,0)
+        self.visited = set()
         
         # create subscription to track occupancy
         self.occ_subscription = self.create_subscription(
@@ -124,20 +127,8 @@ class AutoNav(Node):
         
         # Extract x and y coordinates
         self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-
-        # Transform odometry coordinates to map frame
-        # try:
-        #     transform = self.tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
-        #     map_x, map_y = self.transform_coordinates(self.x, self.y, transform)
-        #     self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
-        # except tf2_ros.LookupException as e:
-        #     self.get_logger().error(f'Transform lookup failed: {e}')
-
-    def transform_coordinates(self, x, y, transform):
-        # Apply the transformation to the coordinates
-        transformed_x = transform.transform.translation.x + x * math.cos(transform.transform.rotation.z) - y * math.sin(transform.transform.rotation.z)
-        transformed_y = transform.transform.translation.y + x * math.sin(transform.transform.rotation.z) + y * math.cos(transform.transform.rotation.z)
-        return transformed_x, transformed_y
+        # self.get_logger().info('In odom_callback')
+        # self.get_logger().info('x: %f y: %f' % (self.coords[0], self.coords[1]))
 
     def occ_callback(self, msg):
         # self.get_logger().info('In occ_callback')
@@ -170,9 +161,10 @@ class AutoNav(Node):
         # create numpy array
         self.laser_range = np.array(msg.ranges)
         # print to file
-        # np.savetxt(scanfile, self.laser_range)
+        np.savetxt(scanfile, self.laser_range)
         # replace 0's with nan
         self.laser_range[self.laser_range==0] = np.nan
+        
 
 
     # function to rotate the TurtleBot
@@ -244,7 +236,7 @@ class AutoNav(Node):
         occ_grid = self.occdata
         #return if empty
         if occ_grid.shape[0] == 0:
-            return
+            return []
         # Apply max pooling to the occupancy grid
         occ_grid = occ_grid.reshape(1,1,occ_grid.shape[0], occ_grid.shape[1])
         occ_grid_pooled = F.max_pool2d(occ_grid, 5,5).reshape(occ_grid.shape[2]//5, occ_grid.shape[3]//5)
@@ -267,7 +259,7 @@ class AutoNav(Node):
 
         # Create a start node
         if pooled_x == -1 or pooled_y == -1:
-            return
+            return []
         start = MapNode(pooled_x, pooled_y)
         frontier = [start]
         visited = set()
@@ -275,6 +267,8 @@ class AutoNav(Node):
         while len(frontier) > 0:
             current_node = frontier.pop(0)
             if current_node in visited:
+                continue
+            if occ_grid_pooled[current_node.x, current_node.y] > 90:
                 continue
             visited.add(current_node)
             #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
@@ -286,11 +280,14 @@ class AutoNav(Node):
                     frontier.append(neighbor)
                     neighbor.parent = current_node
         path = []
+        visualize_path = []
         while current_node is not None:
+            
             path.append(current_node)
+            visualize_path.append(MapNode(current_node.x, current_node.y))
             current_node = current_node.parent
         path.reverse()
-        self.visualize_path(path, occ_grid_pooled)
+        self.visualize_path(visualize_path, occ_grid_pooled)
         return path
     
     def visualize_path(self, path, pooled_occ_grid):
@@ -298,7 +295,7 @@ class AutoNav(Node):
         occ_grid_copy = np.copy(pooled_occ_grid)
         # Mark the path on the occupancy grid
         for node in path:
-            occ_grid_copy[node.x, node.y] = 100
+            occ_grid_copy[node.x, node.y] = 500
         #save the copy
         np.savetxt('pooled_map.txt', occ_grid_copy)
         self.image.set_data(occ_grid_copy)
@@ -318,14 +315,29 @@ class AutoNav(Node):
             # rotate to that direction, and start moving
 
             #create route
-
-
+            self.path = self.plan_route()
+            if len(self.path) != 0:
+                self.nextcoords = self.path.pop()
+            self.get_logger().info('going into loop')
             while rclpy.ok():
                 
-                path = self.plan_route()
-                if path is not None:
-                    self.get_logger().info('Path starts from: %s' % path[0])
-                
+                if len(self.path) == 0:
+                    self.path = self.plan_route()
+                    if len(self.path) != 0:
+                        self.nextcoords = self.path.pop()
+                    
+                else:
+                    self.get_logger().info('Current position: x=%f, y=%f' % (self.coords[0], self.coords[1]))
+                    #calculate distance from current to next
+                    distance = math.sqrt((self.nextcoords.x - self.coords[0])**2 + (self.nextcoords.y - self.coords[1])**2)
+                    self.get_logger().info('Distance to next node: %f' % distance)
+                    if distance < 0.4:
+                        self.get_logger().info('going to next node')
+                        if len(self.path) > 0:
+                            self.nextcoords = self.path.pop()
+                            self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+                        else:
+                            self.get_logger().info('Destination reached')
                     
                 # allow the callback functions to run
                 rclpy.spin_once(self)
