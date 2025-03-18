@@ -87,6 +87,8 @@ class AutoNav(Node):
         self.yaw = 0
         self.coords = (0,0)
         self.path = [] 
+        self.nextcoords = (0,0)
+        self.visited = set()
         
         # create subscription to track occupancy
         self.occ_subscription = self.create_subscription(
@@ -125,20 +127,8 @@ class AutoNav(Node):
         
         # Extract x and y coordinates
         self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-
-        # Transform odometry coordinates to map frame
-        # try:
-        #     transform = self.tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
-        #     map_x, map_y = self.transform_coordinates(self.x, self.y, transform)
-        #     self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
-        # except tf2_ros.LookupException as e:
-        #     self.get_logger().error(f'Transform lookup failed: {e}')
-
-    def transform_coordinates(self, x, y, transform):
-        # Apply the transformation to the coordinates
-        transformed_x = transform.transform.translation.x + x * math.cos(transform.transform.rotation.z) - y * math.sin(transform.transform.rotation.z)
-        transformed_y = transform.transform.translation.y + x * math.sin(transform.transform.rotation.z) + y * math.cos(transform.transform.rotation.z)
-        return transformed_x, transformed_y
+        # self.get_logger().info('In odom_callback')
+        # self.get_logger().info('x: %f y: %f' % (self.coords[0], self.coords[1]))
 
     def occ_callback(self, msg):
         # self.get_logger().info('In occ_callback')
@@ -278,6 +268,8 @@ class AutoNav(Node):
             current_node = frontier.pop(0)
             if current_node in visited:
                 continue
+            if occ_grid_pooled[current_node.x, current_node.y] > 90:
+                continue
             visited.add(current_node)
             #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
             if occ_grid_pooled[current_node.x, current_node.y] == -1:
@@ -320,13 +312,20 @@ class AutoNav(Node):
             # rotate to that direction, and start moving
 
             #create route
-
-
+            self.path = self.plan_route()
+            if self.path is not None:
+                self.nextcoords = self.path.pop()
+            self.get_logger().info('going into loop')
             while rclpy.ok():
                 
-                path = self.plan_route()
-                if path is not None:
-                    self.get_logger().info('Path starts from: %s' % path[0])
+                # if len(self.path) == 0:
+                #     self.path = self.plan_route()
+                # if self.path is not None:
+                #     self.get_logger().info('Path starts from: %s' % self.path[0])
+                
+                # #calculate distance from current to next
+                # distance = math.sqrt((self.nextcoords.x - self.coords[0])**2 + (self.nextcoords.y - self.coords[1])**2)
+                # self.get_logger().info('Distance to next node: %f' % distance)
                 
                     
                 # allow the callback functions to run
