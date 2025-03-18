@@ -126,7 +126,7 @@ class AutoNav(Node):
         self.roll, self.pitch, self.yaw = euler_from_quaternion(orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w)
         
         # Extract x and y coordinates
-        self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        # self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
         # self.get_logger().info('In odom_callback')
         # self.get_logger().info('x: %f y: %f' % (self.coords[0], self.coords[1]))
 
@@ -251,6 +251,7 @@ class AutoNav(Node):
                 map_y= (transform.transform.translation.y - self.map_origin.y)/self.map_res
                 pooled_x = int(map_x / 5)
                 pooled_y = int(map_y / 5)
+                self.coords = (pooled_x, pooled_y)
                 self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
             else:
                 self.get_logger().warn('Transform from "map" to "base_link" not available yet. Retrying...')
