@@ -1,7 +1,7 @@
 class MapNode():
-    def __init__(self,x,y):
-        self.x = x
-        self.y = y
+    def __init__(self,x:float,y:float):
+        self.x = float(x)
+        self.y = float(y)
         self.parent = None
         self.neighbors = []
 
@@ -34,6 +34,8 @@ class MapNode():
             return self.neighbors
         else:
             return self.neighbors
+
+
 
             
 
