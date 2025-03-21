@@ -270,9 +270,11 @@ class AutoNav(Node):
         if pooled_x == -1 or pooled_y == -1:
             return []
         start = MapNode(pooled_x, pooled_y)
-        frontier = [start]
+        frontier = start.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
+        frontier = [node for node in frontier if occ_grid_pooled[int(node.y),int(node.x)] != -1 and occ_grid_pooled[int(node.y),int(node.x)] < 70]
         visited = set()
-        current_node = start
+        visited.add(start)
+        current_node = frontier[0]
         while len(frontier) > 0:
             current_node = frontier.pop(0)
             if current_node in visited:
@@ -299,6 +301,7 @@ class AutoNav(Node):
             visualize_path.append(MapNode(current_node.x, current_node.y))
             current_node = current_node.parent
         path.reverse()
+        visualize_path.reverse()
         self.get_logger().info("reversing list")
         for node in path:
             self.get_logger().info(f'Path node: x={node.x}, y={node.y}')
@@ -310,10 +313,13 @@ class AutoNav(Node):
         occ_grid_copy = np.copy(pooled_occ_grid)
         # Mark the path on the occupancy grid
         path_grid = np.zeros_like(occ_grid_copy)
+        start = path.pop(0)
+        self.get_logger().info(f'Path node: x={start.x}, y={start.y}')
+        path_grid[int(start.y), int(start.x)] = 100
         for node in path:
             #occ_grid_copy[node.y, node.x] = 200
             self.get_logger().info(f'Path node: x={node.x}, y={node.y}')
-            path_grid[int(node.y), int(node.x)] = 200
+            path_grid[int(node.y), int(node.x)] = 50
         #save the copy
         np.savetxt('pooled_map.txt', occ_grid_copy)
         np.savetxt('path_map.txt', path_grid)
@@ -405,46 +411,30 @@ class AutoNav(Node):
         cmd_vel_pub.publish(move_msg)
 
     def mover(self):
-        try:
-            # initialize variable to write elapsed time to file
-            # contourCheck = 1
 
-            # find direction with the largest distance from the Lidar,
-            # rotate to that direction, and start moving
+        # try:
+        #     # initialize variable to write elapsed time to file
+        #     # contourCheck = 1
 
-            #create route
-            path_test(self)
-            while rclpy.ok():
-                if len(self.path) == 0:
-                    self.path = self.plan_route()
-                    if len(self.path) != 0:
-                        self.nextcoords = self.path.pop()
+        #     # find direction with the largest distance from the Lidar,
+        #     # rotate to that direction, and start moving
+
+        #     #create route
+            
+        #     while rclpy.ok():
                     
-                else:
-                    self.get_logger().info('Current position: x=%f, y=%f' % (self.coords[0], self.coords[1]))
-                    self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
-                    self.get_logger().info("next node types are: x=%s, y=%s" % (type(self.nextcoords.x), type(self.nextcoords.y)))
-                    #calculate distance from current to next
-                    distance = math.sqrt((self.nextcoords.x - self.coords[0])**2 + (self.nextcoords.y - self.coords[1])**2)
-                    self.get_logger().info('Distance to next node: %f' % distance)
-                    if distance < 0.0001:
-                        self.get_logger().info('going to next node')
-                        if len(self.path) > 0:
-                            self.nextcoords = self.path.pop()
-                            self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
-                        else:
-                            self.get_logger().info('Destination reached')
-                    
-                # allow the callback functions to run
-                rclpy.spin_once(self)
+        #         # allow the callback functions to run
+        #         rclpy.spin_once(self)
 
-        # except Exception as e:
-        #    print(e)
+        # # except Exception as e:
+        # #    print(e)
         
-        # Ctrl-c detected
-        finally:
-            # stop moving
-            self.stopbot()
+        # # Ctrl-c detected
+        # finally:
+        #     # stop moving
+        #     self.stopbot()
+
+        path_test(self)
 
 
 def main(args=None):
