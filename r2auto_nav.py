@@ -235,6 +235,7 @@ class AutoNav(Node):
     def plan_route(self):
         # Get the occupancy grid
         occ_grid = self.occdata
+        found_path = False
         #return if empty
         if occ_grid.shape[0] == 0:
             return []
@@ -246,8 +247,7 @@ class AutoNav(Node):
         # find where the turtlebot lies in the pooled occupancy_grid
         pooled_x = -1
         pooled_y = -1
-        odom_factor_x = 0
-        odom_factor_y = 0
+
         try:
             timeout = rclpy.time.Duration(seconds=2.0)  # Wait up to 2 seconds
             
@@ -258,10 +258,9 @@ class AutoNav(Node):
                 map_y= (transform.transform.translation.y - self.map_origin.y)/self.map_res
                 pooled_x = min(round(map_x / 5), occ_grid_pooled.shape[1] - 1)
                 pooled_y = min(round(map_y / 5), occ_grid_pooled.shape[0] - 1)
-                odom_factor_x = float(self.coords[0] / map_x)
-                odom_factor_y = float(self.coords[1] / map_y)
+                
                 self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
-                self.get_logger().info(f'odom factors: x={odom_factor_x}, y={odom_factor_y}')
+
             else:
                 self.get_logger().warn('Transform from "map" to "base_link" not available yet. Retrying...')
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
@@ -286,6 +285,7 @@ class AutoNav(Node):
             #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
             if occ_grid_pooled[int(current_node.y),int(current_node.x)] == -1:
                 self.get_logger().info(f'Found unknown space at x={int(current_node.x)}, y={int(current_node.y)}')
+                found_path = True
                 break
             neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
             for neighbor in neighbors:
@@ -294,11 +294,12 @@ class AutoNav(Node):
                     neighbor.parent = current_node
         path = []
         visualize_path = []
-        
+        if not found_path:
+            return []
         while current_node is not None:     
             # Convert pooled grid coordinates back to map coordinates
-            map_x = (current_node.x * 5 + 2.5) * self.map_res + self.map_origin.x
-            map_y = (current_node.y * 5 + 2.5) * self.map_res + self.map_origin.y
+            map_x = (current_node.x * 5 ) * self.map_res + self.map_origin.x
+            map_y = (current_node.y * 5 ) * self.map_res + self.map_origin.y
             toAppend = MapNode(map_x, map_y)
             self.get_logger().info(f'Path node: x={toAppend.x}, y={toAppend.y}')
             path.append(toAppend)
@@ -331,72 +332,165 @@ class AutoNav(Node):
         # Redraw the plot
         plt.draw()
         plt.pause(0.01)  # Allow the GUI event loop to update
-
-
+    
     def traverse_path(self):
-        if not self.path:
-            self.get_logger().info("Path is empty. Exiting traverse.")
+        """Traverse the path planned by plan_route()"""
+        self.get_logger().info('Starting path traversal')
+        
+        # Generate the path to the unexplored area
+        path = self.plan_route()
+        
+        if not path:
+            self.get_logger().warn('No valid path found!')
             return
         
-        cmd_vel_pub = self.publisher_  # Use existing publisher
-        rate = self.create_rate(10)  # Adjust rate as needed
+        self.get_logger().info(f'Path with {len(path)} nodes generated')
         
-        for target_node in self.path:
-            target_x = target_node.x
-            target_y = target_node.y
-            self.get_logger().info(f"Navigating to node: x={target_x:.2f}, y={target_y:.2f}")
+        # For each waypoint in the path
+        for i, node in enumerate(path):
+            self.get_logger().info(f'Moving to waypoint {i+1}/{len(path)}: x={node.x}, y={node.y}')
             
-            while rclpy.ok():
+            # Keep trying to reach the waypoint
+            reached = False
+            attempts = 0
+            max_attempts = 3
+            
+            while not reached and attempts < max_attempts:
                 try:
-                    # Get current pose in MAP frame (map -> base_link)
+                    # Get current position in the map frame
                     transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
                     current_x = transform.transform.translation.x
                     current_y = transform.transform.translation.y
-                    current_quat = transform.transform.rotation
-                    current_theta = euler_from_quaternion(
-                        current_quat.x, current_quat.y, current_quat.z, current_quat.w
-                    )[2]
-                except TransformException as e:
-                    self.get_logger().error(f"Transform error: {e}")
-                    continue
+                    
+                    # Calculate angle to target in map frame
+                    target_angle = math.atan2(node.y - current_y, node.x - current_x)
+                    
+                    # Get current orientation in map frame
+                    _, _, current_angle = euler_from_quaternion(
+                        transform.transform.rotation.x,
+                        transform.transform.rotation.y,
+                        transform.transform.rotation.z,
+                        transform.transform.rotation.w
+                    )
+                    
+                    # Calculate the angle difference
+                    angle_diff = math.degrees(target_angle - current_angle)
+                    # Normalize to [-180, 180]
+                    if angle_diff > 180:
+                        angle_diff -= 360
+                    elif angle_diff < -180:
+                        angle_diff += 360
+                        
+                    self.get_logger().info(f'Rotating {angle_diff} degrees to face waypoint')
+                    
+                    # Rotate to face the target
+                    self.rotatebot(angle_diff)
+                    
+                    # Calculate distance to target
+                    distance = math.sqrt((node.x - current_x)**2 + (node.y - current_y)**2)
+                    self.get_logger().info(f'Distance to waypoint: {distance}m')
+                    
+                    # Move towards the target
+                    self.move_forward(distance)
+                    
+                    # Check if we reached the waypoint (within tolerance)
+                    transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                    current_x = transform.transform.translation.x
+                    current_y = transform.transform.translation.y
+                    new_distance = math.sqrt((node.x - current_x)**2 + (node.y - current_y)**2)
+                    tolerance = 0.15  # 15cm tolerance
+                    
+                    if new_distance <= tolerance:
+                        reached = True
+                        self.get_logger().info(f'Reached waypoint {i+1}')
+                    else:
+                        attempts += 1
+                        self.get_logger().warn(f'Failed to reach waypoint, attempt {attempts}/{max_attempts}. Current distance: {new_distance}m')
+                        # Slight pause between attempts
+                        time.sleep(0.5)
+                        
+                except (LookupException, ConnectivityException, ExtrapolationException, TransformException) as e:
+                    self.get_logger().error(f'Transform error: {str(e)}')
+                    attempts += 1
+                    time.sleep(1.0)
+            
+            if not reached:
+                self.get_logger().error(f'Failed to reach waypoint {i+1} after {max_attempts} attempts, continuing to next')
+        
+        self.get_logger().info('Path traversal complete')
+    
+    def move_forward(self, distance):
+        """Move the TurtleBot forward by the specified distance in meters"""
+        self.get_logger().info(f'Moving forward {distance} meters')
+        
+        # Create Twist message
+        twist = Twist()
+        
+        # Set linear speed (meters per second)
+        twist.linear.x = speedchange  # Using the constant defined at the top
+        
+        try:
+            # Get starting position in map frame
+            start_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            start_x = start_transform.transform.translation.x
+            start_y = start_transform.transform.translation.y
+            
+            # Keep track of distance moved
+            distance_moved = 0.0
+            
+            # Start moving
+            while distance_moved < distance:
+                # Check for obstacles in front
+                    
+                # Publish the twist message
+                self.publisher_.publish(twist)
                 
-                dx = target_x - current_x
-                dy = target_y - current_y
-                distance = math.hypot(dx, dy)
+                # Allow callbacks to execute
+                rclpy.spin_once(self)
                 
-                if distance < 0.1:  # 10 cm threshold
-                    self.get_logger().info(f"Reached node: x={target_x:.2f}, y={target_y:.2f}")
+                # Get current position in map frame
+                try:
+                    current_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                    current_x = current_transform.transform.translation.x
+                    current_y = current_transform.transform.translation.y
+                    
+                    # Calculate distance moved
+                    distance_moved = math.sqrt(
+                        (current_x - start_x)**2 + (current_y - start_y)**2
+                    )
+                    
+                except (LookupException, ConnectivityException, ExtrapolationException, TransformException):
+                    # If transform fails, just continue with the time-based approach
+                    pass
+                
+                # Small delay to prevent flooding
+                time.sleep(0.05)
+        
+        except (LookupException, ConnectivityException, ExtrapolationException, TransformException) as e:
+            self.get_logger().warn(f'Could not get transform for movement feedback: {str(e)}')
+            
+            # Fallback to time-based movement
+            time_to_move = distance / speedchange
+            start_time = self.get_clock().now()
+            
+            while True:
+                if self.check_obstacles():
+                    self.get_logger().warn('Obstacle detected! Stopping movement')
+                    break
+                    
+                self.publisher_.publish(twist)
+                rclpy.spin_once(self)
+                
+                current_time = self.get_clock().now()
+                elapsed = (current_time - start_time).nanoseconds / 1e9
+                
+                if elapsed >= time_to_move:
                     break
                 
-                # Calculate target angle in map frame
-                target_theta = math.atan2(dy, dx)
-                d_theta = target_theta - current_theta
-                d_theta = math.atan2(math.sin(d_theta), math.cos(d_theta))  # Normalize
-                
-                # Proportional control gains (adjust as needed)
-                k_rho = 0.3
-                k_alpha = 0.5
-                
-                linear = k_rho * distance
-                angular = k_alpha * d_theta
-                
-                # Clamp speeds
-                linear = max(min(linear, 0.2), -0.2)
-                angular = max(min(angular, 0.5), -0.5)
-                
-                twist = Twist()
-                twist.linear.x = float(linear)
-                twist.angular.z = float(angular)
-                cmd_vel_pub.publish(twist)
-                
-                rate.sleep()
-            
-            # Stop upon reaching the node
-            self.stopbot()
+                time.sleep(0.05)
         
-        self.get_logger().info("Finished traversing path.")
+        # Stop the robot
         self.stopbot()
-        
 
     def mover(self):
 
