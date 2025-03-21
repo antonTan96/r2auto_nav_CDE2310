@@ -20,7 +20,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid
 import tf2_ros
-from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+from tf2_ros import LookupException, ConnectivityException, ExtrapolationException, TransformException
 import numpy as np
 import math
 import cmath
@@ -250,6 +250,7 @@ class AutoNav(Node):
         odom_factor_y = 0
         try:
             timeout = rclpy.time.Duration(seconds=2.0)  # Wait up to 2 seconds
+            
             if self.tf_buffer.can_transform('map', 'base_link', rclpy.time.Time(), timeout):
                 transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
                 
@@ -295,16 +296,16 @@ class AutoNav(Node):
         visualize_path = []
         
         while current_node is not None:     
-            toAppend = MapNode((0.5+current_node.x) * 5 * odom_factor_x, (0.5+current_node.y) * 5 * odom_factor_y)
+            # Convert pooled grid coordinates back to map coordinates
+            map_x = (current_node.x * 5 + 2.5) * self.map_res + self.map_origin.x
+            map_y = (current_node.y * 5 + 2.5) * self.map_res + self.map_origin.y
+            toAppend = MapNode(map_x, map_y)
             self.get_logger().info(f'Path node: x={toAppend.x}, y={toAppend.y}')
             path.append(toAppend)
             visualize_path.append(MapNode(current_node.x, current_node.y))
             current_node = current_node.parent
         path.reverse()
         visualize_path.reverse()
-        self.get_logger().info("reversing list")
-        for node in path:
-            self.get_logger().info(f'Path node: x={node.x}, y={node.y}')
         self.visualize_path(visualize_path, occ_grid_pooled)
         return path
     
@@ -333,82 +334,69 @@ class AutoNav(Node):
 
 
     def traverse_path(self):
-        path = self.plan_route()
-        if not path:
-            self.get_logger().warn("Path is empty. Cannot traverse.")
+        if not self.path:
+            self.get_logger().info("Path is empty. Exiting traverse.")
             return
-
-        cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
-        for i in range(1, len(path)):
-            current_node = path[i]
-            target_x = self.map_origin.x + (current_node.x * 5 + 2.5) * self.map_res
-            target_y = self.map_origin.y + (current_node.y * 5 + 2.5) * self.map_res
-
-            # Get current pose
-            try:
-                transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                current_x = transform.transform.translation.x
-                current_y = transform.transform.translation.y
-                current_quat = transform.transform.rotation
-                current_yaw = euler_from_quaternion(
-                    [current_quat.x, current_quat.y, current_quat.z, current_quat.w]
-                )[2]
-            except Exception as e:
-                self.get_logger().error(f"Failed to get transform: {e}")
-                continue
-
-            dx = target_x - current_x
-            dy = target_y - current_y
-            desired_yaw = math.atan2(dy, dx)
-            rotation = desired_yaw - current_yaw
-            rotation = (rotation + math.pi) % (2 * math.pi) - math.pi  # Normalize
-            rotation_deg = math.degrees(rotation)
-            if rotation_deg < 0:
-                rotation_deg += 360  # Convert to clockwise degrees
-
-            # Rotate the robot
-            self.rotatebot(int(rotation_deg))
-
-            # Move forward
-            distance = math.hypot(dx, dy)
-            self.move_forward(cmd_vel_pub, distance)
-
-    def move_forward(self, cmd_vel_pub, distance):
-        move_msg = Twist()
-        move_msg.linear.x = 0.1  # Adjust speed as needed
-        tolerance = 0.05  # 5 cm tolerance
-
-        # Record start position
-        try:
-            transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-            start_x = transform.transform.translation.x
-            start_y = transform.transform.translation.y
-        except Exception as e:
-            self.get_logger().error(f"Failed to get start position: {e}")
-            return
-
-        # Move until distance is covered
-        while True:
-            # Check current position
-            try:
-                transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                current_x = transform.transform.translation.x
-                current_y = transform.transform.translation.y
-                traveled = math.hypot(current_x - start_x, current_y - start_y)
+        cmd_vel_pub = self.publisher_  # Use existing publisher
+        rate = self.create_rate(10)  # Adjust rate as needed
+        
+        for target_node in self.path:
+            target_x = target_node.x
+            target_y = target_node.y
+            self.get_logger().info(f"Navigating to node: x={target_x:.2f}, y={target_y:.2f}")
+            
+            while rclpy.ok():
+                try:
+                    # Get current pose in MAP frame (map -> base_link)
+                    transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                    current_x = transform.transform.translation.x
+                    current_y = transform.transform.translation.y
+                    current_quat = transform.transform.rotation
+                    current_theta = euler_from_quaternion(
+                        current_quat.x, current_quat.y, current_quat.z, current_quat.w
+                    )[2]
+                except TransformException as e:
+                    self.get_logger().error(f"Transform error: {e}")
+                    continue
                 
-                if traveled >= distance - tolerance:
+                dx = target_x - current_x
+                dy = target_y - current_y
+                distance = math.hypot(dx, dy)
+                
+                if distance < 0.1:  # 10 cm threshold
+                    self.get_logger().info(f"Reached node: x={target_x:.2f}, y={target_y:.2f}")
                     break
-            except Exception as e:
-                self.get_logger().error(f"Error during movement: {e}")
-                continue
-
-            cmd_vel_pub.publish(move_msg)
-            rclpy.spin_once(self, timeout_sec=0.1)
-
-        # Stop the robot
-        move_msg.linear.x = 0.0
-        cmd_vel_pub.publish(move_msg)
+                
+                # Calculate target angle in map frame
+                target_theta = math.atan2(dy, dx)
+                d_theta = target_theta - current_theta
+                d_theta = math.atan2(math.sin(d_theta), math.cos(d_theta))  # Normalize
+                
+                # Proportional control gains (adjust as needed)
+                k_rho = 0.3
+                k_alpha = 0.5
+                
+                linear = k_rho * distance
+                angular = k_alpha * d_theta
+                
+                # Clamp speeds
+                linear = max(min(linear, 0.2), -0.2)
+                angular = max(min(angular, 0.5), -0.5)
+                
+                twist = Twist()
+                twist.linear.x = float(linear)
+                twist.angular.z = float(angular)
+                cmd_vel_pub.publish(twist)
+                
+                rate.sleep()
+            
+            # Stop upon reaching the node
+            self.stopbot()
+        
+        self.get_logger().info("Finished traversing path.")
+        self.stopbot()
+        
 
     def mover(self):
 
@@ -433,8 +421,9 @@ class AutoNav(Node):
         # finally:
         #     # stop moving
         #     self.stopbot()
-
         path_test(self)
+        self.traverse_path()
+        self.stopbot()
 
 
 def main(args=None):
