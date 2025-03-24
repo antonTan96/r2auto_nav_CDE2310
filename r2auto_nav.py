@@ -27,13 +27,14 @@ import cmath
 import time
 from auto_nav.mapNode import MapNode
 from auto_nav.tests.path_test import path_test
+from auto_nav.tests.move_forward_test import move_forward_test
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 
 # constants
 rotatechange = 0.1
-speedchange = 0.2
+speedchange = 0.1
 occ_bins = [-1, 0, 100, 101]
 stop_distance = 0.25
 front_angle = 10
@@ -239,11 +240,11 @@ class AutoNav(Node):
         #return if empty
         if occ_grid.shape[0] == 0:
             return []
-        #pad the occupancy grid to have size divisible by 5
-        occ_grid = F.pad(occ_grid, (0, 5 - occ_grid.shape[1] % 5, 0, 5 - occ_grid.shape[0] % 5), value=-1) 
+        #pad the occupancy grid to have size divisible by 3
+        occ_grid = F.pad(occ_grid, (0, 3 - occ_grid.shape[1] % 3, 0, 3 - occ_grid.shape[0] % 3), value=-1) 
         # Apply max pooling to the occupancy grid
         occ_grid = occ_grid.reshape(1,1,occ_grid.shape[0], occ_grid.shape[1])
-        occ_grid_pooled = F.max_pool2d(occ_grid, 5,5).reshape(occ_grid.shape[2]//5, occ_grid.shape[3]//5)
+        occ_grid_pooled = F.max_pool2d(occ_grid, 3,3).reshape(occ_grid.shape[2]//3, occ_grid.shape[3]//3)
         # find where the turtlebot lies in the pooled occupancy_grid
         pooled_x = -1
         pooled_y = -1
@@ -256,9 +257,23 @@ class AutoNav(Node):
                 
                 map_x= (transform.transform.translation.x - self.map_origin.x)/self.map_res
                 map_y= (transform.transform.translation.y - self.map_origin.y)/self.map_res
-                pooled_x = min(round(map_x / 5), occ_grid_pooled.shape[1] - 1)
-                pooled_y = min(round(map_y / 5), occ_grid_pooled.shape[0] - 1)
-                
+                pooled_x = min(round(map_x / 3), occ_grid_pooled.shape[1] - 1)
+                pooled_y = min(round(map_y / 3), occ_grid_pooled.shape[0] - 1)
+                potential_cells = [(pooled_y, pooled_x)]
+                if occ_grid_pooled[pooled_y, pooled_x] >= 70:
+                    potential_cells = []
+                    for i in range(-1,2):
+                        for j in range(-1,2):
+                            if occ_grid_pooled[pooled_y + i, pooled_x + j] < 70:
+                                potential_cells.append((pooled_y + i, pooled_x + j))
+                    #find closest potential cell to robot
+                    min_dist = float('inf')
+                    for cell in potential_cells:
+                        dist = math.sqrt((cell[0] - pooled_y)**2 + (cell[1] - pooled_x)**2)
+                        if dist < min_dist:
+                            min_dist = dist
+                            pooled_y, pooled_x = cell
+                    
                 self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
 
             else:
@@ -269,17 +284,24 @@ class AutoNav(Node):
         # Create a start node
         if pooled_x == -1 or pooled_y == -1:
             return []
+        
+        #BFS setup
+        self.get_logger().info(f'Starting BFS from x={pooled_x}, y={pooled_y}')
         start = MapNode(pooled_x, pooled_y)
-        frontier = start.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
-        frontier = [node for node in frontier if occ_grid_pooled[int(node.y),int(node.x)] != -1 and occ_grid_pooled[int(node.y),int(node.x)] < 70]
+        frontier = [start]
         visited = set()
-        visited.add(start)
+        if len(frontier) == 0:
+            self.visualize_path([start], occ_grid_pooled)
+            return []
         current_node = frontier[0]
+        #BFS loop
+        self.get_logger().info('Starting BFS')
         while len(frontier) > 0:
             current_node = frontier.pop(0)
             if current_node in visited:
                 continue
             if occ_grid_pooled[int(current_node.y),int(current_node.x)] >= 70:
+                #skip occupied nodes
                 continue
             visited.add(current_node)
             #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
@@ -289,17 +311,19 @@ class AutoNav(Node):
                 break
             neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
             for neighbor in neighbors:
+                #prepare to explore neighboring nodes
                 if neighbor not in visited:
                     frontier.append(neighbor)
                     neighbor.parent = current_node
         path = []
         visualize_path = []
         if not found_path:
+            self.visualize_path([start], occ_grid_pooled)
             return []
         while current_node is not None:     
             # Convert pooled grid coordinates back to map coordinates
-            map_x = (current_node.x * 5 ) * self.map_res + self.map_origin.x
-            map_y = (current_node.y * 5 ) * self.map_res + self.map_origin.y
+            map_x = (current_node.x * 3 ) * self.map_res + self.map_origin.x
+            map_y = (current_node.y * 3 ) * self.map_res + self.map_origin.y
             toAppend = MapNode(map_x, map_y)
             self.get_logger().info(f'Path node: x={toAppend.x}, y={toAppend.y}')
             path.append(toAppend)
@@ -307,10 +331,15 @@ class AutoNav(Node):
             current_node = current_node.parent
         path.reverse()
         visualize_path.reverse()
+        visited_grid = np.zeros_like(occ_grid_pooled)
+        for node in visited:
+            visited_grid[int(node.y), int(node.x)] = 100
+        np.savetxt('visited_map.txt', visited_grid)
         self.visualize_path(visualize_path, occ_grid_pooled)
         return path
     
     def visualize_path(self, path, pooled_occ_grid):
+        self.get_logger().info('Visualizing path')
         # Create a copy of the occupancy grid
         occ_grid_copy = np.copy(pooled_occ_grid)
         # Mark the path on the occupancy grid
@@ -329,95 +358,63 @@ class AutoNav(Node):
         occ_grid_copy[occ_grid_copy != -1] = 0
         occ_grid_copy[occ_grid_copy == -1] = 1
         np.savetxt('unknown_map.txt', occ_grid_copy)
+        
         # Redraw the plot
         plt.draw()
         plt.pause(0.01)  # Allow the GUI event loop to update
     
-    def traverse_path(self):
+    def travel_to_node(self, next_node):
         """Traverse the path planned by plan_route()"""
-        self.get_logger().info('Starting path traversal')
+        self.get_logger().info(f'Approaching {next_node.x}, {next_node.y}')
+                
+        # Get current position in the map frame
+        transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+        current_x = transform.transform.translation.x
+        current_y = transform.transform.translation.y
         
-        # Generate the path to the unexplored area
-        path = self.plan_route()
+        # Calculate angle to target in map frame
+        target_angle = math.atan2(next_node.y - current_y, next_node.x - current_x)
         
-        if not path:
-            self.get_logger().warn('No valid path found!')
-            return
+        # Get current orientation in map frame
+        _, _, current_angle = euler_from_quaternion(
+            transform.transform.rotation.x,
+            transform.transform.rotation.y,
+            transform.transform.rotation.z,
+            transform.transform.rotation.w
+        )
         
-        self.get_logger().info(f'Path with {len(path)} nodes generated')
-        
-        # For each waypoint in the path
-        for i, node in enumerate(path):
-            self.get_logger().info(f'Moving to waypoint {i+1}/{len(path)}: x={node.x}, y={node.y}')
+        # Calculate the angle difference
+        angle_diff = math.degrees(target_angle - current_angle)
+        # Normalize to [-180, 180]
+        if angle_diff > 180:
+            angle_diff -= 360
+        elif angle_diff < -180:
+            angle_diff += 360
             
-            # Keep trying to reach the waypoint
-            reached = False
-            attempts = 0
-            max_attempts = 3
-            
-            while not reached and attempts < max_attempts:
-                try:
-                    # Get current position in the map frame
-                    transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                    current_x = transform.transform.translation.x
-                    current_y = transform.transform.translation.y
-                    
-                    # Calculate angle to target in map frame
-                    target_angle = math.atan2(node.y - current_y, node.x - current_x)
-                    
-                    # Get current orientation in map frame
-                    _, _, current_angle = euler_from_quaternion(
-                        transform.transform.rotation.x,
-                        transform.transform.rotation.y,
-                        transform.transform.rotation.z,
-                        transform.transform.rotation.w
-                    )
-                    
-                    # Calculate the angle difference
-                    angle_diff = math.degrees(target_angle - current_angle)
-                    # Normalize to [-180, 180]
-                    if angle_diff > 180:
-                        angle_diff -= 360
-                    elif angle_diff < -180:
-                        angle_diff += 360
-                        
-                    self.get_logger().info(f'Rotating {angle_diff} degrees to face waypoint')
-                    
-                    # Rotate to face the target
-                    self.rotatebot(angle_diff)
-                    
-                    # Calculate distance to target
-                    distance = math.sqrt((node.x - current_x)**2 + (node.y - current_y)**2)
-                    self.get_logger().info(f'Distance to waypoint: {distance}m')
-                    
-                    # Move towards the target
-                    self.move_forward(distance)
-                    
-                    # Check if we reached the waypoint (within tolerance)
-                    transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                    current_x = transform.transform.translation.x
-                    current_y = transform.transform.translation.y
-                    new_distance = math.sqrt((node.x - current_x)**2 + (node.y - current_y)**2)
-                    tolerance = 0.15  # 15cm tolerance
-                    
-                    if new_distance <= tolerance:
-                        reached = True
-                        self.get_logger().info(f'Reached waypoint {i+1}')
-                    else:
-                        attempts += 1
-                        self.get_logger().warn(f'Failed to reach waypoint, attempt {attempts}/{max_attempts}. Current distance: {new_distance}m')
-                        # Slight pause between attempts
-                        time.sleep(0.5)
-                        
-                except (LookupException, ConnectivityException, ExtrapolationException, TransformException) as e:
-                    self.get_logger().error(f'Transform error: {str(e)}')
-                    attempts += 1
-                    time.sleep(1.0)
-            
-            if not reached:
-                self.get_logger().error(f'Failed to reach waypoint {i+1} after {max_attempts} attempts, continuing to next')
+        self.get_logger().info(f'Rotating {angle_diff} degrees to face waypoint')
         
-        self.get_logger().info('Path traversal complete')
+        # Rotate to face the target
+        self.rotatebot(angle_diff)
+        
+        # Calculate distance to target
+        distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
+        self.get_logger().info(f'Distance to waypoint: {distance}m')
+        
+        # Move towards the target
+        self.move_forward(distance)
+
+    def get_distance_to_next_node(self, next_node):
+        """Calculate the distance to the next node in the path"""
+        # Get current position in the map frame
+        transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+        current_x = transform.transform.translation.x
+        current_y = transform.transform.translation.y
+        self.get_logger().info(f'Current position: x={current_x}, y={current_y}')
+        
+        # Calculate distance to target
+        distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
+        return distance
+        
     
     def move_forward(self, distance):
         """Move the TurtleBot forward by the specified distance in meters"""
@@ -430,8 +427,9 @@ class AutoNav(Node):
         twist.linear.x = speedchange  # Using the constant defined at the top
         
         try:
+            timeout = rclpy.time.Duration(seconds=2.0)
             # Get starting position in map frame
-            start_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            start_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time(), timeout)
             start_x = start_transform.transform.translation.x
             start_y = start_transform.transform.translation.y
             
@@ -447,6 +445,11 @@ class AutoNav(Node):
                 
                 # Allow callbacks to execute
                 rclpy.spin_once(self)
+
+                if self.laser_range[0] < stop_distance:
+                    self.get_logger().warn('Obstacle detected! Stopping movement')
+                    self.stopbot()
+                    break
                 
                 # Get current position in map frame
                 try:
@@ -474,8 +477,9 @@ class AutoNav(Node):
             start_time = self.get_clock().now()
             
             while True:
-                if self.check_obstacles():
+                if self.laser_range[0] < stop_distance:
                     self.get_logger().warn('Obstacle detected! Stopping movement')
+                    self.stopbot()
                     break
                     
                 self.publisher_.publish(twist)
@@ -516,8 +520,20 @@ class AutoNav(Node):
         #     # stop moving
         #     self.stopbot()
         path_test(self)
-        self.traverse_path()
-        self.stopbot()
+        
+        self.nextcoords = self.path[1]
+        self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+        while rclpy.ok():
+            distance = self.get_distance_to_next_node(self.path[1])
+            self.get_logger().info(f'Distance to next node: {distance}')
+            rclpy.spin_once(self)
+        # self.move_forward(distance)
+        # if distance<0.05:
+        #     self.get_logger().info('Reached node')
+        # else:
+        #     self.get_logger().info(f'Distance to next node: {distance}')
+            
+
 
 
 def main(args=None):
