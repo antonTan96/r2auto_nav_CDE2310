@@ -3,9 +3,8 @@ import rclpy
 def path_test(auto_node):
     while rclpy.ok():
         
-        auto_node.path = auto_node.plan_route()
+        auto_node.path = auto_node.plan_route(True)
 
-        rclpy.spin_once(auto_node)    
         if len(auto_node.path) != 0:
             auto_node.get_logger().info('exiting')
             break
