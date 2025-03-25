@@ -31,14 +31,13 @@ from auto_nav.tests.move_forward_test import move_forward_test
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
+import threading
 
 # constants
-rotatechange = 0.1
+rotatechange = 0.15
 speedchange = 0.1
 occ_bins = [-1, 0, 100, 101]
 stop_distance = 0.25
-front_angle = 10
-front_angles = range(-front_angle,front_angle+1,1)
 scanfile = 'lidar.txt'
 mapfile = 'map.txt'
 
@@ -121,6 +120,11 @@ class AutoNav(Node):
         self.image = self.ax.imshow(np.zeros((1,1)), cmap='gray')
         plt.colorbar(self.image, ax=self.ax)
         plt.title("Occupancy Grid with Path")
+        self.spin_thread = threading.Thread(target=self.spin_node, daemon=True)
+        self.spin_thread.start()
+
+    def spin_node(self):
+        rclpy.spin(self)
 
 
     def odom_callback(self, msg):
@@ -155,7 +159,7 @@ class AutoNav(Node):
         self.occdata = torch.tensor(oc2).reshape(msg.info.height, msg.info.width)
 
         # print to file
-        np.savetxt(mapfile, self.occdata)
+        #np.savetxt(mapfile, self.occdata)
 
 
     def scan_callback(self, msg):
@@ -163,7 +167,7 @@ class AutoNav(Node):
         # create numpy array
         self.laser_range = np.array(msg.ranges)
         # print to file
-        np.savetxt(scanfile, self.laser_range)
+        #np.savetxt(scanfile, self.laser_range)
         # replace 0's with nan
         self.laser_range[self.laser_range==0] = np.nan
         
@@ -204,8 +208,6 @@ class AutoNav(Node):
         # if the rotation direction was 1.0, then we will want to stop when the c_dir_diff
         # becomes -1.0, and vice versa
         while(c_change_dir * c_dir_diff > 0):
-            # allow the callback functions to run
-            rclpy.spin_once(self)
             current_yaw = self.yaw
             # convert the current yaw to complex form
             c_yaw = complex(math.cos(current_yaw),math.sin(current_yaw))
@@ -233,9 +235,11 @@ class AutoNav(Node):
         self.publisher_.publish(twist)
     
 
-    def plan_route(self):
+    def plan_route(self,visualize=False):
         # Get the occupancy grid
         occ_grid = self.occdata
+        if visualize:
+            np.savetxt(mapfile, occ_grid)
         found_path = False
         #return if empty
         if occ_grid.shape[0] == 0:
@@ -318,7 +322,8 @@ class AutoNav(Node):
         path = []
         visualize_path = []
         if not found_path:
-            self.visualize_path([start], occ_grid_pooled)
+            if visualize:
+                self.visualize_path([start], occ_grid_pooled)
             return []
         while current_node is not None:     
             # Convert pooled grid coordinates back to map coordinates
@@ -334,8 +339,9 @@ class AutoNav(Node):
         visited_grid = np.zeros_like(occ_grid_pooled)
         for node in visited:
             visited_grid[int(node.y), int(node.x)] = 100
-        np.savetxt('visited_map.txt', visited_grid)
-        self.visualize_path(visualize_path, occ_grid_pooled)
+        if visualize:
+            np.savetxt('visited_map.txt', visited_grid)
+            self.visualize_path(visualize_path, occ_grid_pooled)
         return path
     
     def visualize_path(self, path, pooled_occ_grid):
@@ -352,8 +358,10 @@ class AutoNav(Node):
             self.get_logger().info(f'Path node: x={node.x}, y={node.y}')
             path_grid[int(node.y), int(node.x)] = 50
         #save the copy
+        
         np.savetxt('pooled_map.txt', occ_grid_copy)
         np.savetxt('path_map.txt', path_grid)
+        
         self.image.set_data(occ_grid_copy)
         occ_grid_copy[occ_grid_copy != -1] = 0
         occ_grid_copy[occ_grid_copy == -1] = 1
@@ -369,11 +377,11 @@ class AutoNav(Node):
                 
         # Get current position in the map frame
         transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-        current_x = transform.transform.translation.x
-        current_y = transform.transform.translation.y
+        start_x = transform.transform.translation.x
+        start_y = transform.transform.translation.y
         
         # Calculate angle to target in map frame
-        target_angle = math.atan2(next_node.y - current_y, next_node.x - current_x)
+        target_angle = math.atan2(next_node.y - start_y, next_node.x - start_x)
         
         # Get current orientation in map frame
         _, _, current_angle = euler_from_quaternion(
@@ -397,11 +405,54 @@ class AutoNav(Node):
         self.rotatebot(angle_diff)
         
         # Calculate distance to target
-        distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
+        distance = math.sqrt((next_node.x - start_x)**2 + (next_node.y - start_y)**2)
         self.get_logger().info(f'Distance to waypoint: {distance}m')
         
         # Move towards the target
-        self.move_forward(distance)
+        #self.move_forward(distance)
+        twist = Twist()
+        
+        # Set linear speed (meters per second)
+        twist.linear.x = speedchange  # Using the constant defined at the top
+        
+        # Keep track of distance moved
+        distance_moved = 0.0
+        
+        # Start moving
+        while distance_moved < distance:
+            # Check for obstacles in front
+            # if self.scan_front_obstacle() != None:
+            #     self.get_logger().warn('Obstacle detected! Stopping movement')
+            #     self.stopbot()
+            #     break
+                
+            # Publish the twist message
+            self.publisher_.publish(twist)
+            
+            # Allow callbacks to execute
+
+            if self.laser_range[0] < stop_distance:
+                self.get_logger().warn('Obstacle detected! Stopping movement')
+                self.stopbot()
+                break
+            
+            # Get current position in map frame
+            try:
+                current_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                current_x = current_transform.transform.translation.x
+                current_y = current_transform.transform.translation.y
+                
+                # Calculate distance moved
+                distance_moved = math.sqrt(
+                    (current_x - start_x)**2 + (current_y - start_y)**2
+                )
+                
+            except (LookupException, ConnectivityException, ExtrapolationException, TransformException):
+                # If transform fails, just continue with the time-based approach
+                pass
+            
+            # Small delay to prevent flooding
+            time.sleep(0.01)
 
     def get_distance_to_next_node(self, next_node):
         """Calculate the distance to the next node in the path"""
@@ -414,87 +465,39 @@ class AutoNav(Node):
         # Calculate distance to target
         distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
         return distance
-        
-    
-    def move_forward(self, distance):
-        """Move the TurtleBot forward by the specified distance in meters"""
-        self.get_logger().info(f'Moving forward {distance} meters')
-        
-        # Create Twist message
-        twist = Twist()
-        
-        # Set linear speed (meters per second)
-        twist.linear.x = speedchange  # Using the constant defined at the top
-        
-        try:
-            timeout = rclpy.time.Duration(seconds=2.0)
-            # Get starting position in map frame
-            start_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time(), timeout)
-            start_x = start_transform.transform.translation.x
-            start_y = start_transform.transform.translation.y
-            
-            # Keep track of distance moved
-            distance_moved = 0.0
-            
-            # Start moving
-            while distance_moved < distance:
-                # Check for obstacles in front
-                    
-                # Publish the twist message
-                self.publisher_.publish(twist)
-                
-                # Allow callbacks to execute
-                rclpy.spin_once(self)
 
-                if self.laser_range[0] < stop_distance:
-                    self.get_logger().warn('Obstacle detected! Stopping movement')
-                    self.stopbot()
-                    break
-                
-                # Get current position in map frame
-                try:
-                    current_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                    current_x = current_transform.transform.translation.x
-                    current_y = current_transform.transform.translation.y
-                    
-                    # Calculate distance moved
-                    distance_moved = math.sqrt(
-                        (current_x - start_x)**2 + (current_y - start_y)**2
-                    )
-                    
-                except (LookupException, ConnectivityException, ExtrapolationException, TransformException):
-                    # If transform fails, just continue with the time-based approach
-                    pass
-                
-                # Small delay to prevent flooding
-                time.sleep(0.05)
-        
-        except (LookupException, ConnectivityException, ExtrapolationException, TransformException) as e:
-            self.get_logger().warn(f'Could not get transform for movement feedback: {str(e)}')
-            
-            # Fallback to time-based movement
-            time_to_move = distance / speedchange
-            start_time = self.get_clock().now()
-            
-            while True:
-                if self.laser_range[0] < stop_distance:
-                    self.get_logger().warn('Obstacle detected! Stopping movement')
-                    self.stopbot()
-                    break
-                    
-                self.publisher_.publish(twist)
-                rclpy.spin_once(self)
-                
-                current_time = self.get_clock().now()
-                elapsed = (current_time - start_time).nanoseconds / 1e9
-                
-                if elapsed >= time_to_move:
-                    break
-                
-                time.sleep(0.05)
-        
-        # Stop the robot
-        self.stopbot()
+    
+    def scan_front_obstacle(self):
+        """Check for obstacles in front of the TurtleBot"""
+        # Check for obstacles in front
+        front_angle = int(30/360 * len(self.laser_range))
+        total_angle = front_angle * 2
+        left_border = int(-front_angle + total_angle/3)
+        right_border = int(front_angle - total_angle/3)
+
+        left_angles = range(-front_angle,left_border)
+        middle_angles = range(left_border,right_border)
+        right_angles = range(right_border,front_angle)
+        # Get the front angles
+        left_ranges = self.laser_range[left_angles]
+        middle_ranges = self.laser_range[middle_angles]
+        right_ranges = self.laser_range[right_angles]
+
+        # Check for obstacles in front
+        if np.nanmin(middle_ranges) < stop_distance:
+            self.get_logger().warn('Obstacle detected in front')
+            return "front"
+        # Check for obstacles on the left
+        if np.nanmin(left_ranges) < stop_distance:
+            self.get_logger().warn('Obstacle detected on the left')
+            return "left"
+        # Check for obstacles on the right
+        if np.nanmin(right_ranges) < stop_distance:
+            self.get_logger().warn('Obstacle detected on the right')
+            return "right"
+
+        return None
+    
 
     def mover(self):
 
@@ -519,14 +522,25 @@ class AutoNav(Node):
         # finally:
         #     # stop moving
         #     self.stopbot()
+        start_time = time.time()
         path_test(self)
+        self.path = self.plan_route()
+        while len(self.path) == 0:
+            self.path = self.plan_route()
+            if time.time() - start_time > 10:
+                self.get_logger().info('No path found') 
+                return
         
         self.nextcoords = self.path[1]
         self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
         while rclpy.ok():
-            distance = self.get_distance_to_next_node(self.path[1])
-            self.get_logger().info(f'Distance to next node: {distance}')
-            rclpy.spin_once(self)
+            self.travel_to_node(self.nextcoords)
+            self.path.pop(0)
+            if len(self.path) == 1:
+                self.path=self.plan_route()
+                if len(self.path) == 0:
+                    break
+            self.nextcoords = self.path[1]
         # self.move_forward(distance)
         # if distance<0.05:
         #     self.get_logger().info('Reached node')
