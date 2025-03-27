@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import threading
+from sensor_msgs.msg import Temperature
 
 # constants
 rotatechange = 0.15
@@ -89,7 +90,6 @@ class AutoNav(Node):
         self.coords = (0,0)
         self.path = [] 
         self.nextcoords = MapNode(0,0)
-        self.visited = set()
         
         # create subscription to track occupancy
         self.occ_subscription = self.create_subscription(
@@ -114,12 +114,25 @@ class AutoNav(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer,self)
 
+        #heat sources
+        self.visited_heat_sources = set()
+        self.ir_columns=np.array([])
+        self.heat_map_subscriber = self.create_subscription(
+            Temperature,
+            'heat_map',
+            self.heat_map_callback,
+            qos_profile_sensor_data
+        )
+        self.heat_map_subscriber  # prevent unused variable warning
+
         #interactive image
         plt.ion()
         self.fig, self.ax = plt.subplots()
         self.image = self.ax.imshow(np.zeros((1,1)), cmap='gray')
         plt.colorbar(self.image, ax=self.ax)
         plt.title("Occupancy Grid with Path")
+
+        #spin node in separate thread
         self.spin_thread = threading.Thread(target=self.spin_node, daemon=True)
         self.spin_thread.start()
 
@@ -409,7 +422,6 @@ class AutoNav(Node):
         self.get_logger().info(f'Distance to waypoint: {distance}m')
         
         # Move towards the target
-        #self.move_forward(distance)
         twist = Twist()
         
         # Set linear speed (meters per second)
@@ -430,11 +442,23 @@ class AutoNav(Node):
             self.publisher_.publish(twist)
             
             # Allow callbacks to execute
-
-            if self.laser_range[0] < stop_distance:
-                self.get_logger().warn('Obstacle detected! Stopping movement')
-                self.stopbot()
-                break
+            obstacle_direction = self.scan_front_obstacle()
+            if obstacle_direction != None:
+                if obstacle_direction == "front":
+                    self.get_logger().warn('Obstacle detected in front! Stopping movement')
+                    #move back for 1 second
+                    self.stopbot()
+                    twist.linear.x = -speedchange
+                    self.publisher_.publish(twist)
+                    time.sleep(0.5)
+                    self.stopbot()
+                    break
+                elif obstacle_direction == "left":
+                    self.get_logger().warn('Obstacle detected on the left! Rotating right')
+                    self.rotatebot(-10)
+                elif obstacle_direction == "right":
+                    self.get_logger().warn('Obstacle detected on the right! Rotating left')
+                    self.rotatebot(10)
             
             # Get current position in map frame
             try:
@@ -443,9 +467,11 @@ class AutoNav(Node):
                 current_y = current_transform.transform.translation.y
                 
                 # Calculate distance moved
-                distance_moved = math.sqrt(
+                distance_moved += math.sqrt(
                     (current_x - start_x)**2 + (current_y - start_y)**2
                 )
+                start_x = current_x
+                start_y = current_y
                 
             except (LookupException, ConnectivityException, ExtrapolationException, TransformException):
                 # If transform fails, just continue with the time-based approach
@@ -465,7 +491,96 @@ class AutoNav(Node):
         # Calculate distance to target
         distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
         return distance
+    
+    # def verify_heat_source(self, proximity_threshold=0.5):
+    #     """
+    #     Verify and log heat source detection with robust location tracking
+        
+    #     Args:
+    #         proximity_threshold (float): Maximum distance (meters) to consider 
+    #                                     as the same heat source location
+        
+    #     Returns:
+    #         bool: True if a new heat source is detected, False otherwise
+    #     """
+    #     try:
+    #         # Check if IR columns have meaningful data
+    #         if len(self.ir_columns) == 0:
+    #             return False
+            
+    #         # Check temperature variation threshold
+    #         temp_variation = max(self.ir_columns) - min(self.ir_columns)
+    #         if temp_variation > 4:  # Adjust threshold as needed
+    #             transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+    #             current_x = transform.transform.translation.x
+    #             current_y = transform.transform.translation.y
+    #             current_coords = (current_x, current_y)
+    #             # Check if this heat source is sufficiently far from previously visited sources
+    #             is_new_source = True
+    #             for visited_source in self.visited_heat_sources:
+    #                 # Calculate Euclidean distance between current location and visited sources
+    #                 distance = np.sqrt(
+    #                     (current_coords[0] - visited_source[0])**2 + 
+    #                     (current_coords[1] - visited_source[1])**2
+    #                 )
+                    
+    #                 # If within proximity threshold, consider it the same source
+    #                 if distance < proximity_threshold:
+    #                     is_new_source = False
+    #                     break
+                
+    #             # If truly a new heat source
+    #             if is_new_source:
+    #                 self.approach_heat_source()
+    #                 return True
+            
+    #         return False
+        
+    #     except Exception as e:
+    #         self.get_logger().error(f'Error in heat source verification: {str(e)}')
+    #         return False
 
+            
+    # def approach_heat_source(self):
+    #     """Approach a heat source for further investigation"""
+    #     try:
+    #         if max(self.ir_columns) == self.ir_columns[2] or max(self.ir_columns) == self.ir_columns[3]:
+    #             # Move towards the target
+    #             twist = Twist()
+                
+    #             # Set linear speed (meters per second)
+    #             twist.linear.x = speedchange  # Using the constant defined at the top
+    #             self.publisher_.publish(twist)
+    #             # Start moving
+    #             while True:
+    #                 # Check for obstacles in front
+    #                 if self.scan_front_obstacle() == "front":
+    #                     self.get_logger().warn('Obstacle detected! Stopping movement')
+    #                     self.stopbot()
+    #                     break
+    #                 elif self.scan_front_obstacle() == "left":
+    #                     self.get_logger().warn('Obstacle detected on the left! Rotating right')
+    #                     self.rotatebot(-10)
+    #                 elif self.scan_front_obstacle() == "right":
+    #                     self.get_logger().warn('Obstacle detected on the right! Rotating left')
+    #                     self.rotatebot(10)
+
+    #             if max(self.ir_columns) - min(self.ir_columns) < 4:
+    #                 self.get_logger().info('Heat source is not significant')
+    #                 return
+    #             else :
+    #                 #shoot balls
+    #                 self.get_logger().info('Heat source is significant')
+    #                 transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+    #                 current_x = transform.transform.translation.x
+    #                 current_y = transform.transform.translation.y
+    #                 self.visited_heat_sources.add((current_x, current_y))
+            
+    #         # Stop the TurtleBot
+    #         self.stopbot()
+            
+    #     except Exception as e:
+    #         self.get_logger().error(f'Error in approaching heat source: {str(e)}')
     
     def scan_front_obstacle(self):
         """Check for obstacles in front of the TurtleBot"""
@@ -537,15 +652,21 @@ class AutoNav(Node):
             self.travel_to_node(self.nextcoords)
             self.path.pop(0)
             if len(self.path) == 1:
-                self.path=self.plan_route()
-                if len(self.path) == 0:
+                tries =  10
+                while tries != 0:
+                    
+                    self.path=self.plan_route()
+                    if len(self.path) == 0:
+                        tries -= 1
+                        time.sleep(1)
+                    else:
+                        break
+                if tries == 0:
+                    self.get_logger().info('No path found')
                     break
             self.nextcoords = self.path[1]
-        # self.move_forward(distance)
-        # if distance<0.05:
-        #     self.get_logger().info('Reached node')
-        # else:
-        #     self.get_logger().info(f'Distance to next node: {distance}')
+        path_test(self)
+
             
 
 
