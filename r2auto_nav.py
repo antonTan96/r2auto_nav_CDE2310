@@ -19,6 +19,8 @@ from geometry_msgs.msg import Twist
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid
+from std_msgs.msg import Int8
+
 import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException, TransformException
 import numpy as np
@@ -28,15 +30,16 @@ import time
 from auto_nav.mapNode import MapNode
 from auto_nav.tests.path_test import path_test
 from auto_nav.tests.move_forward_test import move_forward_test
+from auto_nav.tests.heat_source_test import heat_source_test
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import threading
-from sensor_msgs.msg import Temperature
+
 
 # constants
 rotatechange = 0.15
-speedchange = 0.1
+speedchange = 0.13
 occ_bins = [-1, 0, 100, 101]
 stop_distance = 0.25
 scanfile = 'lidar.txt'
@@ -116,12 +119,12 @@ class AutoNav(Node):
 
         #heat sources
         self.visited_heat_sources = set()
-        self.ir_columns=np.array([])
+        self.ir_index=-1
         self.heat_map_subscriber = self.create_subscription(
-            Temperature,
-            'heat_map',
+            Int8,
+            'heatdir',
             self.heat_map_callback,
-            qos_profile_sensor_data
+            10
         )
         self.heat_map_subscriber  # prevent unused variable warning
 
@@ -139,13 +142,17 @@ class AutoNav(Node):
     def spin_node(self):
         rclpy.spin(self)
 
+    def heat_map_callback(self, msg):
+        self.ir_index = msg.data
+        self.get_logger().info(f'IR index: {self.ir_index}')
+
 
     def odom_callback(self, msg):
         orientation_quat =  msg.pose.pose.orientation
         self.roll, self.pitch, self.yaw = euler_from_quaternion(orientation_quat.x, orientation_quat.y, orientation_quat.z, orientation_quat.w)
         
         # Extract x and y coordinates
-        self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        #self.coords = (msg.pose.pose.position.x, msg.pose.pose.position.y)
         # self.get_logger().info('In odom_callback')
         # self.get_logger().info('x: %f y: %f' % (self.coords[0], self.coords[1]))
 
@@ -165,11 +172,8 @@ class AutoNav(Node):
         # get map origin struct has fields of x, y, and z
         self.map_origin = msg.info.origin.position
 
-        #reshape into 2D
-        oc2 = msgdata 
-        # reshape to 2D array using column order
-        
-        self.occdata = torch.tensor(oc2).reshape(msg.info.height, msg.info.width)
+        # reshape to 2D array using column order        
+        self.occdata = torch.tensor(msgdata).reshape(msg.info.height, msg.info.width)
 
         # print to file
         #np.savetxt(mapfile, self.occdata)
@@ -183,6 +187,16 @@ class AutoNav(Node):
         #np.savetxt(scanfile, self.laser_range)
         # replace 0's with nan
         self.laser_range[self.laser_range==0] = np.nan
+
+    def get_orientation(self):
+        transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+        _, _, current_angle = euler_from_quaternion(
+            transform.transform.rotation.x,
+            transform.transform.rotation.y,
+            transform.transform.rotation.z,
+            transform.transform.rotation.w
+        )
+        return transform.transform.translation.x, transform.transform.translation.y, current_angle
         
 
 
@@ -270,10 +284,10 @@ class AutoNav(Node):
             timeout = rclpy.time.Duration(seconds=2.0)  # Wait up to 2 seconds
             
             if self.tf_buffer.can_transform('map', 'base_link', rclpy.time.Time(), timeout):
-                transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
                 
-                map_x= (transform.transform.translation.x - self.map_origin.x)/self.map_res
-                map_y= (transform.transform.translation.y - self.map_origin.y)/self.map_res
+                current_x, current_y, _ = self.get_orientation()
+                map_x= (current_x - self.map_origin.x)/self.map_res
+                map_y= (current_y - self.map_origin.y)/self.map_res
                 pooled_x = min(round(map_x / 3), occ_grid_pooled.shape[1] - 1)
                 pooled_y = min(round(map_y / 3), occ_grid_pooled.shape[0] - 1)
                 potential_cells = [(pooled_y, pooled_x)]
@@ -389,20 +403,10 @@ class AutoNav(Node):
         self.get_logger().info(f'Approaching {next_node.x}, {next_node.y}')
                 
         # Get current position in the map frame
-        transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-        start_x = transform.transform.translation.x
-        start_y = transform.transform.translation.y
+        start_x, start_y , current_angle = self.get_orientation()
         
         # Calculate angle to target in map frame
         target_angle = math.atan2(next_node.y - start_y, next_node.x - start_x)
-        
-        # Get current orientation in map frame
-        _, _, current_angle = euler_from_quaternion(
-            transform.transform.rotation.x,
-            transform.transform.rotation.y,
-            transform.transform.rotation.z,
-            transform.transform.rotation.w
-        )
         
         # Calculate the angle difference
         angle_diff = math.degrees(target_angle - current_angle)
@@ -462,9 +466,7 @@ class AutoNav(Node):
             
             # Get current position in map frame
             try:
-                current_transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                current_x = current_transform.transform.translation.x
-                current_y = current_transform.transform.translation.y
+                current_x, current_y, _ = self.get_orientation()
                 
                 # Calculate distance moved
                 distance_moved += math.sqrt(
@@ -483,107 +485,132 @@ class AutoNav(Node):
     def get_distance_to_next_node(self, next_node):
         """Calculate the distance to the next node in the path"""
         # Get current position in the map frame
-        transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-        current_x = transform.transform.translation.x
-        current_y = transform.transform.translation.y
+        current_x, current_y, _ = self.get_orientation()
         self.get_logger().info(f'Current position: x={current_x}, y={current_y}')
         
         # Calculate distance to target
         distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
         return distance
     
-    # def verify_heat_source(self, proximity_threshold=0.5):
-    #     """
-    #     Verify and log heat source detection with robust location tracking
+    def verify_heat_source(self, proximity_threshold=0.5):
+        """
+        Verify and log heat source detection with robust location tracking
         
-    #     Args:
-    #         proximity_threshold (float): Maximum distance (meters) to consider 
-    #                                     as the same heat source location
+        Args:
+            proximity_threshold (float): Maximum distance (meters) to consider 
+                                        as the same heat source location
         
-    #     Returns:
-    #         bool: True if a new heat source is detected, False otherwise
-    #     """
-    #     try:
-    #         # Check if IR columns have meaningful data
-    #         if len(self.ir_columns) == 0:
-    #             return False
-            
-    #         # Check temperature variation threshold
-    #         temp_variation = max(self.ir_columns) - min(self.ir_columns)
-    #         if temp_variation > 4:  # Adjust threshold as needed
-    #             transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-    #             current_x = transform.transform.translation.x
-    #             current_y = transform.transform.translation.y
-    #             current_coords = (current_x, current_y)
-    #             # Check if this heat source is sufficiently far from previously visited sources
-    #             is_new_source = True
-    #             for visited_source in self.visited_heat_sources:
-    #                 # Calculate Euclidean distance between current location and visited sources
-    #                 distance = np.sqrt(
-    #                     (current_coords[0] - visited_source[0])**2 + 
-    #                     (current_coords[1] - visited_source[1])**2
-    #                 )
-                    
-    #                 # If within proximity threshold, consider it the same source
-    #                 if distance < proximity_threshold:
-    #                     is_new_source = False
-    #                     break
+        Returns:
+            bool: True if a new heat source is detected, False otherwise
+        """
+        try:
+            # Check if IR columns have meaningful data
+            if self.ir_index == -1:
+                return False            
+            self.stopbot()
+            current_x, current_y, _ = self.get_orientation()
+
+            current_coords = (current_x, current_y)
+            # Check if this heat source is sufficiently far from previously visited sources
+            is_new_source = True
+            for visited_source in self.visited_heat_sources:
+                # Calculate Euclidean distance between current location and visited sources
+                distance = np.sqrt(
+                    (current_coords[0] - visited_source[0])**2 + 
+                    (current_coords[1] - visited_source[1])**2
+                )
                 
-    #             # If truly a new heat source
-    #             if is_new_source:
-    #                 self.approach_heat_source()
-    #                 return True
+                # If within proximity threshold, consider it the same source
+                if distance < proximity_threshold:
+                    is_new_source = False
+                    break
             
-    #         return False
+            # If truly a new heat source
+            return is_new_source
         
-    #     except Exception as e:
-    #         self.get_logger().error(f'Error in heat source verification: {str(e)}')
-    #         return False
+        except Exception as e:
+            self.get_logger().error(f'Error in heat source verification: {str(e)}')
+            return False
 
             
-    # def approach_heat_source(self):
-    #     """Approach a heat source for further investigation"""
-    #     try:
-    #         if max(self.ir_columns) == self.ir_columns[2] or max(self.ir_columns) == self.ir_columns[3]:
-    #             # Move towards the target
-    #             twist = Twist()
-                
-    #             # Set linear speed (meters per second)
-    #             twist.linear.x = speedchange  # Using the constant defined at the top
-    #             self.publisher_.publish(twist)
-    #             # Start moving
-    #             while True:
-    #                 # Check for obstacles in front
-    #                 if self.scan_front_obstacle() == "front":
-    #                     self.get_logger().warn('Obstacle detected! Stopping movement')
-    #                     self.stopbot()
-    #                     break
-    #                 elif self.scan_front_obstacle() == "left":
-    #                     self.get_logger().warn('Obstacle detected on the left! Rotating right')
-    #                     self.rotatebot(-10)
-    #                 elif self.scan_front_obstacle() == "right":
-    #                     self.get_logger().warn('Obstacle detected on the right! Rotating left')
-    #                     self.rotatebot(10)
+    def approach_heat_source(self):
+        """Approach a heat source for further investigation"""
+        try:
+            
+            # Move towards the target
+            twist = Twist()
+            
+            # Set linear speed (meters per second)
+            twist.linear.x = speedchange  # Using the constant defined at the top
+            self.publisher_.publish(twist)
+            # Start moving
+            while True:
+                # Check for obstacles in front
+                if self.scan_front_obstacle() == "front":
+                    self.get_logger().warn('Obstacle detected! Stopping movement')
+                    self.stopbot()
+                    break
+                elif self.scan_front_obstacle() == "left":
+                    self.get_logger().warn('Obstacle detected on the left! Rotating right')
+                    self.rotatebot(-10)
+                elif self.scan_front_obstacle() == "right":
+                    self.get_logger().warn('Obstacle detected on the right! Rotating left')
+                    self.rotatebot(10)
 
-    #             if max(self.ir_columns) - min(self.ir_columns) < 4:
-    #                 self.get_logger().info('Heat source is not significant')
-    #                 return
-    #             else :
-    #                 #shoot balls
-    #                 self.get_logger().info('Heat source is significant')
-    #                 transform = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-    #                 current_x = transform.transform.translation.x
-    #                 current_y = transform.transform.translation.y
-    #                 self.visited_heat_sources.add((current_x, current_y))
+            if self.ir_index == -1:
+                self.get_logger().info('Heat source is not significant')
+                return
+            else :
+                #shoot balls
+                self.get_logger().info('Heat source is significant')
+                distance_from_object = self.laser_range[0]
+                
+                # Get current position in map frame
+                current_x, current_y, current_angle = self.get_orientation()
+
+                #get find coordinates of object in front
+                object_x = current_x + distance_from_object * math.cos(current_angle)
+                object_y = current_y + distance_from_object * math.sin(current_angle)
+                #shoot balls
+                
+                self.visited_heat_sources.add((object_x, object_y))
+
+                self.save_heat_source_map()
             
-    #         # Stop the TurtleBot
-    #         self.stopbot()
+            # Stop the TurtleBot
+            self.stopbot()
             
-    #     except Exception as e:
-    #         self.get_logger().error(f'Error in approaching heat source: {str(e)}')
+        except Exception as e:
+            self.get_logger().error(f'Error in approaching heat source: {str(e)}')
+
+    def save_heat_source_map(self):
+        """Save the map with visited heat sources"""
+        try:
+            # Get the occupancy grid
+            occ_grid = self.occdata
+            
+            # Create a copy of the occupancy grid
+            occ_grid_copy = np.copy(occ_grid)
+            
+            # Mark the visited heat sources on the occupancy grid
+            for source in self.visited_heat_sources:
+                # Convert heat source coordinates to grid coordinates
+                grid_x = int((source[0] - self.map_origin.x) / self.map_res)
+                grid_y = int((source[1] - self.map_origin.y) / self.map_res)
+                
+                # Mark the heat source on the grid
+                occ_grid_copy[grid_y, grid_x] = 100
+            
+            # Save the map
+            np.savetxt('heat_source_map.txt', occ_grid_copy)
+            
+        except Exception as e:
+            self.get_logger().error(f'Error in saving heat source map: {str(e)}')
     
     def scan_front_obstacle(self):
         """Check for obstacles in front of the TurtleBot"""
+        if self.laser_range.size == 0:
+            return None
         # Check for obstacles in front
         front_angle = int(30/360 * len(self.laser_range))
         total_angle = front_angle * 2
@@ -637,35 +664,54 @@ class AutoNav(Node):
         # finally:
         #     # stop moving
         #     self.stopbot()
-        start_time = time.time()
-        path_test(self)
-        self.path = self.plan_route()
-        while len(self.path) == 0:
-            self.path = self.plan_route()
-            if time.time() - start_time > 10:
-                self.get_logger().info('No path found') 
-                return
+
+
+        # '''traversal code'''
+        # start_time = time.time()
+        # path_test(self)
+        # self.path = self.plan_route()
+        # while len(self.path) == 0:
+        #     self.path = self.plan_route()
+        #     if time.time() - start_time > 10:
+        #         self.get_logger().info('No path found') 
+        #         return
         
-        self.nextcoords = self.path[1]
-        self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+        # self.nextcoords = self.path[1]
+        # self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+        # while rclpy.ok():
+        #     if len(self.visited_heat_sources)!=2 and self.ir_index != -1 and self.verify_heat_source(1.2) and False:
+
+        #         self.approach_heat_source()
+        #         self.path = self.plan_route()
+            
+        #     else:
+                
+        #         self.travel_to_node(self.nextcoords)
+        #         self.path.pop(0)
+        #         if len(self.path) == 1:
+        #             tries =  10
+        #             while tries != 0:
+                        
+        #                 self.path=self.plan_route()
+        #                 if len(self.path) == 0:
+        #                     tries -= 1
+        #                     time.sleep(1)
+        #                 else:
+        #                     break
+        #             if tries == 0:
+        #                 self.get_logger().info('No path found')
+        #                 break
+        #         self.nextcoords = self.path[1]
+        # self.stopbot()
+        # path_test(self)
+
+
+        '''heat source code'''
+        heat_source_test(self)
         while rclpy.ok():
-            self.travel_to_node(self.nextcoords)
-            self.path.pop(0)
-            if len(self.path) == 1:
-                tries =  10
-                while tries != 0:
-                    
-                    self.path=self.plan_route()
-                    if len(self.path) == 0:
-                        tries -= 1
-                        time.sleep(1)
-                    else:
-                        break
-                if tries == 0:
-                    self.get_logger().info('No path found')
-                    break
-            self.nextcoords = self.path[1]
-        path_test(self)
+            self.stopbot()
+            
+
 
             
 
