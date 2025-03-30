@@ -29,7 +29,6 @@ import cmath
 import time
 from auto_nav.mapNode import MapNode
 from auto_nav.tests.path_test import path_test
-from auto_nav.tests.move_forward_test import move_forward_test
 from auto_nav.tests.heat_source_test import heat_source_test
 import matplotlib.pyplot as plt
 import torch
