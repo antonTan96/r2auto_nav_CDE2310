@@ -1,9 +1,10 @@
 import math
 import rclpy
 def path_test(auto_node):
+    '''tests the path planning algorithm once'''
     while rclpy.ok():
         
-        auto_node.path = auto_node.plan_route(True)
+        auto_node.path = auto_node.plan_route(visualize=True)
 
         if len(auto_node.path) != 0:
             auto_node.get_logger().info('exiting')
