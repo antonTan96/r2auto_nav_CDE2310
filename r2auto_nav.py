@@ -28,17 +28,21 @@ import math
 import cmath
 import time
 from auto_nav.mapNode import MapNode
+from auto_nav.tests.test_heat_source_approach import test_heat_source_approach
+from auto_nav.tests.test_turn import test_turn
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import threading
+import random
 
 
 # constants
-rotatechange = 0.15
-speedchange = 0.13
+rotatechange = 0.3
+speedchange = 0.12
 occ_bins = [-1, 0, 100, 101]
-stop_distance = 0.25
+stop_distance = 0.28
+side_distance = 0.34
 scanfile = 'lidar.txt'
 mapfile = 'map.txt'
 
@@ -90,6 +94,8 @@ class AutoNav(Node):
         self.coords = (0,0)
         self.path = [] 
         self.nextcoords = MapNode(0,0)
+        self.bonk_count = 0
+        self.spin_coords = []
         
         # create subscription to track occupancy
         self.occ_subscription = self.create_subscription(
@@ -115,7 +121,7 @@ class AutoNav(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer,self)
 
         #heat sources
-        self.visited_heat_sources = set()
+        self.visited_heat_sources = []
         self.ir_index=-1
         self.heat_map_subscriber = self.create_subscription(
             Int8,
@@ -141,7 +147,7 @@ class AutoNav(Node):
 
     def heat_map_callback(self, msg):
         self.ir_index = msg.data
-        self.get_logger().info(f'IR index: {self.ir_index}')
+        #self.get_logger().info(f'IR index: {self.ir_index}')
 
 
     def odom_callback(self, msg):
@@ -173,7 +179,7 @@ class AutoNav(Node):
         self.occdata = torch.tensor(msgdata).reshape(msg.info.height, msg.info.width)
 
         # print to file
-        #np.savetxt(mapfile, self.occdata)
+        np.savetxt(mapfile, self.occdata)
 
 
     def scan_callback(self, msg):
@@ -198,7 +204,7 @@ class AutoNav(Node):
 
 
     # function to rotate the TurtleBot
-    def rotatebot(self, rot_angle):
+    def rotatebot(self, rot_angle, speed = 0.0):
         # self.get_logger().info('In rotatebot')
         # create Twist object
         twist = Twist()
@@ -220,7 +226,7 @@ class AutoNav(Node):
         # get the sign of the imaginary component to figure out which way we have to turn
         c_change_dir = np.sign(c_change.imag)
         # set linear speed to zero so the TurtleBot rotates on the spot
-        twist.linear.x = 0.0
+        twist.linear.x = speed
         # set the direction to rotate
         twist.angular.z = c_change_dir * rotatechange
         # start rotation
@@ -258,8 +264,8 @@ class AutoNav(Node):
         # time.sleep(1)
         self.publisher_.publish(twist)
     
-
-    def plan_route(self,visualize=False):
+    
+    def plan_route(self, visualize=False, goal=None):
         # Get the occupancy grid
         occ_grid = self.occdata
         if visualize:
@@ -273,27 +279,42 @@ class AutoNav(Node):
         # Apply max pooling to the occupancy grid
         occ_grid = occ_grid.reshape(1,1,occ_grid.shape[0], occ_grid.shape[1])
         occ_grid_pooled = F.max_pool2d(occ_grid, 3,3).reshape(occ_grid.shape[2]//3, occ_grid.shape[3]//3)
-        # find where the turtlebot lies in the pooled occupancy_grid
+        
+        # Create a distance-to-wall grid for path optimization
+        wall_distance = np.zeros_like(occ_grid_pooled, dtype=float)
+        WALL_THRESHOLD = 70  # Cells with values >= 70 are considered walls
+        
+        # Find cells that are walls
+        wall_cells = np.where(occ_grid_pooled >= WALL_THRESHOLD)
+        
+        # Find where the turtlebot lies in the pooled occupancy_grid
         pooled_x = -1
         pooled_y = -1
 
         try:
             timeout = rclpy.time.Duration(seconds=2.0)  # Wait up to 2 seconds
+            goal_pooled_x = -1
+            goal_pooled_y = -1
             
             if self.tf_buffer.can_transform('map', 'base_link', rclpy.time.Time(), timeout):
-                
                 current_x, current_y, _ = self.get_orientation()
-                map_x= (current_x - self.map_origin.x)/self.map_res
-                map_y= (current_y - self.map_origin.y)/self.map_res
+                map_x = (current_x - self.map_origin.x)/self.map_res
+                map_y = (current_y - self.map_origin.y)/self.map_res
+                if goal is not None:
+                    goal_x, goal_y = goal.x, goal.y
+                    goal_pooled_x = min(round((goal_x - self.map_origin.x) / self.map_res / 3), occ_grid_pooled.shape[1] - 1)
+                    goal_pooled_y = min(round((goal_y - self.map_origin.y) / self.map_res / 3), occ_grid_pooled.shape[0] - 1)
                 pooled_x = min(round(map_x / 3), occ_grid_pooled.shape[1] - 1)
                 pooled_y = min(round(map_y / 3), occ_grid_pooled.shape[0] - 1)
                 potential_cells = [(pooled_y, pooled_x)]
-                if occ_grid_pooled[pooled_y, pooled_x] >= 70:
+                if occ_grid_pooled[pooled_y, pooled_x] >= WALL_THRESHOLD:
                     potential_cells = []
                     for i in range(-1,2):
                         for j in range(-1,2):
-                            if occ_grid_pooled[pooled_y + i, pooled_x + j] < 70:
-                                potential_cells.append((pooled_y + i, pooled_x + j))
+                            ny, nx = pooled_y + i, pooled_x + j
+                            if 0 <= ny < occ_grid_pooled.shape[0] and 0 <= nx < occ_grid_pooled.shape[1]:
+                                if occ_grid_pooled[ny, nx] < WALL_THRESHOLD:
+                                    potential_cells.append((ny, nx))
                     #find closest potential cell to robot
                     min_dist = float('inf')
                     for cell in potential_cells:
@@ -303,7 +324,6 @@ class AutoNav(Node):
                             pooled_y, pooled_x = cell
                     
                 self.get_logger().info(f'Map coordinates: x={map_x}, y={map_y}')
-
             else:
                 self.get_logger().warn('Transform from "map" to "base_link" not available yet. Retrying...')
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
@@ -313,59 +333,146 @@ class AutoNav(Node):
         if pooled_x == -1 or pooled_y == -1:
             return []
         
+        # Calculate distance to nearest wall for each cell
+        for y in range(occ_grid_pooled.shape[0]):
+            for x in range(occ_grid_pooled.shape[1]):
+                if occ_grid_pooled[y, x] >= WALL_THRESHOLD:
+                    wall_distance[y, x] = 0  # This is a wall
+                else:
+                    # Find minimum distance to any wall
+                    min_dist = float('inf')
+                    for wy, wx in zip(wall_cells[0], wall_cells[1]):
+                        dist = math.sqrt((y - wy)**2 + (x - wx)**2)
+                        min_dist = min(min_dist, dist)
+                    wall_distance[y, x] = min_dist
+        
         #BFS setup
         self.get_logger().info(f'Starting BFS from x={pooled_x}, y={pooled_y}')
         start = MapNode(pooled_x, pooled_y)
         frontier = [start]
         visited = set()
+        visited.add(start)
         if len(frontier) == 0:
-            self.visualize_path([start], occ_grid_pooled)
+            if visualize:
+                self.visualize_path([start], occ_grid_pooled)
             return []
-        current_node = frontier[0]
-        #BFS loop
-        self.get_logger().info('Starting BFS')
+        
+        
+        current_node = None
         while len(frontier) > 0:
             current_node = frontier.pop(0)
-            if current_node in visited:
-                continue
-            if occ_grid_pooled[int(current_node.y),int(current_node.x)] >= 70:
+            if occ_grid_pooled[int(current_node.y), int(current_node.x)] >= WALL_THRESHOLD:
                 #skip occupied nodes
                 continue
             visited.add(current_node)
             #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
-            if occ_grid_pooled[int(current_node.y),int(current_node.x)] == -1:
-                self.get_logger().info(f'Found unknown space at x={int(current_node.x)}, y={int(current_node.y)}')
-                found_path = True
-                break
-            neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[0], occ_grid_pooled.shape[1])
+            if goal is None:
+                if occ_grid_pooled[int(current_node.y), int(current_node.x)] == -1:
+                    self.get_logger().info(f'Found unknown space at x={int(current_node.x)}, y={int(current_node.y)}')
+                    found_path = True
+                    break
+            else:
+                if current_node.x == goal_pooled_x and current_node.y == goal_pooled_y:
+                    self.get_logger().info(f'Found goal')
+                    break
+            neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[1], occ_grid_pooled.shape[0])
+            
+            # Sort neighbors by distance to walls (prefer cells farther from walls)
+            neighbors.sort(key=lambda n: -wall_distance[int(n.y), int(n.x)])
+            
             for neighbor in neighbors:
                 #prepare to explore neighboring nodes
-                if neighbor not in visited:
-                    frontier.append(neighbor)
-                    neighbor.parent = current_node
+                if neighbor in visited:
+                    continue
+                frontier.append(neighbor)
+                visited.add(neighbor)
+                neighbor.parent = current_node
+        
         path = []
         visualize_path = []
-        if not found_path:
+        if not found_path or current_node is None:
+            self.get_logger().info('No path found')
             if visualize:
                 self.visualize_path([start], occ_grid_pooled)
             return []
-        while current_node is not None:     
-            # Convert pooled grid coordinates back to map coordinates
-            map_x = (current_node.x * 3 ) * self.map_res + self.map_origin.x
-            map_y = (current_node.y * 3 ) * self.map_res + self.map_origin.y
+        
+        # Reconstruct path and shift nodes away from walls
+        while current_node is not None:
+            y, x = int(current_node.y), int(current_node.x)
+            
+            # Shift node away from nearby walls
+            shift_x, shift_y = 0, 0
+            max_shift = 0.5  # Maximum shift amount
+            wall_influence_distance = 2  # How far walls influence the path
+            
+            # Check surrounding cells and compute shift vector
+            for dy in range(-wall_influence_distance, wall_influence_distance + 1):
+                for dx in range(-wall_influence_distance, wall_influence_distance + 1):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < occ_grid_pooled.shape[0] and 0 <= nx < occ_grid_pooled.shape[1]:
+                        if occ_grid_pooled[ny, nx] >= WALL_THRESHOLD:
+                            # This is a wall, calculate repulsive force
+                            distance = max(0.1, math.sqrt(dy**2 + dx**2))  # Avoid division by zero
+                            # Normalize direction vector
+                            direction_x = -dx / distance  # Negative to move away
+                            direction_y = -dy / distance
+                            
+                            # Scale by inverse distance (closer walls push harder)
+                            magnitude = max_shift * (1.0 / distance)
+                            
+                            shift_x += direction_x * magnitude
+                            shift_y += direction_y * magnitude
+            
+            # Apply the shift with limits
+            shifted_x = x + shift_x
+            shifted_y = y + shift_y
+            
+            # Ensure we don't shift into walls or out of bounds
+            if (0 <= shifted_y < occ_grid_pooled.shape[0] and 
+                0 <= shifted_x < occ_grid_pooled.shape[1] and
+                occ_grid_pooled[int(shifted_y), int(shifted_x)] < WALL_THRESHOLD):
+                current_node.x = shifted_x
+                current_node.y = shifted_y
+                
+            # Convert pooled grid coordinates back to map coordinates 
+            map_x = (current_node.x * 3 + 1.5) * self.map_res + self.map_origin.x
+            map_y = (current_node.y * 3 + 1.5) * self.map_res + self.map_origin.y
+            
             toAppend = MapNode(map_x, map_y)
             self.get_logger().info(f'Path node: x={toAppend.x}, y={toAppend.y}')
             path.append(toAppend)
             visualize_path.append(MapNode(current_node.x, current_node.y))
             current_node = current_node.parent
+        
         path.reverse()
         visualize_path.reverse()
+        
+        # Smooth the path to remove jagged movements
+        if len(path) > 2:
+            smoothed_path = [path[0]]  # Keep the first point
+            smoothing_window = 3
+            for i in range(1, len(path) - 1):
+                # Simple moving average for smoothing
+                window_start = max(0, i - smoothing_window // 2)
+                window_end = min(len(path), i + smoothing_window // 2 + 1)
+                window = path[window_start:window_end]
+                
+                avg_x = sum(node.x for node in window) / len(window)
+                avg_y = sum(node.y for node in window) / len(window)
+                
+                smoothed_path.append(MapNode(avg_x, avg_y))
+            
+            smoothed_path.append(path[-1])  # Keep the last point
+            path = smoothed_path
+        
         visited_grid = np.zeros_like(occ_grid_pooled)
         for node in visited:
             visited_grid[int(node.y), int(node.x)] = 100
+        
         if visualize:
             np.savetxt('visited_map.txt', visited_grid)
             self.visualize_path(visualize_path, occ_grid_pooled)
+        
         return path
     
     def visualize_path(self, path, pooled_occ_grid):
@@ -373,20 +480,24 @@ class AutoNav(Node):
         # Create a copy of the occupancy grid
         occ_grid_copy = np.copy(pooled_occ_grid)
         # Mark the path on the occupancy grid
-        path_grid = np.zeros_like(occ_grid_copy)
+        path_grid = np.copy(occ_grid_copy)
+        path_grid[np.where(occ_grid_copy >= 70)] = 100
+        path_grid[np.where(occ_grid_copy < 70)] = 0
         start = path.pop(0)
-        self.get_logger().info(f'Path node: x={start.x}, y={start.y}')
-        path_grid[int(start.y), int(start.x)] = 100
+        #self.get_logger().info(f'Path node: x={start.x}, y={start.y}')
+        
         for node in path:
             #occ_grid_copy[node.y, node.x] = 200
-            self.get_logger().info(f'Path node: x={node.x}, y={node.y}')
+            #self.get_logger().info(f'Path node: x={node.x}, y={node.y}')
             path_grid[int(node.y), int(node.x)] = 50
+        #mark start
+        path_grid[int(start.y), int(start.x)] = 75
         #save the copy
         
         np.savetxt('pooled_map.txt', occ_grid_copy)
         np.savetxt('path_map.txt', path_grid)
         
-        self.image.set_data(occ_grid_copy)
+        self.image.set_data(path_grid)
         occ_grid_copy[occ_grid_copy != -1] = 0
         occ_grid_copy[occ_grid_copy == -1] = 1
         np.savetxt('unknown_map.txt', occ_grid_copy)
@@ -401,6 +512,11 @@ class AutoNav(Node):
                 
         # Get current position in the map frame
         start_x, start_y , current_angle = self.get_orientation()
+        distance = math.sqrt((next_node.x - start_x)**2 + (next_node.y - start_y)**2)
+        
+        # Calculate distance to target
+        self.get_logger().info(f'Distance to waypoint: {distance}m')
+        
         
         # Calculate angle to target in map frame
         target_angle = math.atan2(next_node.y - start_y, next_node.x - start_x)
@@ -412,15 +528,16 @@ class AutoNav(Node):
             angle_diff -= 360
         elif angle_diff < -180:
             angle_diff += 360
+        
+        if distance < 0.3 and abs(angle_diff) > 130:
+            self.get_logger().info('Already at waypoint')
+            return
             
         self.get_logger().info(f'Rotating {angle_diff} degrees to face waypoint')
         
         # Rotate to face the target
         self.rotatebot(angle_diff)
         
-        # Calculate distance to target
-        distance = math.sqrt((next_node.x - start_x)**2 + (next_node.y - start_y)**2)
-        self.get_logger().info(f'Distance to waypoint: {distance}m')
         
         # Move towards the target
         twist = Twist()
@@ -451,15 +568,16 @@ class AutoNav(Node):
                     self.stopbot()
                     twist.linear.x = -speedchange
                     self.publisher_.publish(twist)
+                    self.bonk_count += 1
                     time.sleep(0.5)
                     self.stopbot()
                     break
                 elif obstacle_direction == "left":
                     self.get_logger().warn('Obstacle detected on the left! Rotating right')
-                    self.rotatebot(-10)
+                    self.rotatebot(20, speedchange/6)
                 elif obstacle_direction == "right":
                     self.get_logger().warn('Obstacle detected on the right! Rotating left')
-                    self.rotatebot(10)
+                    self.rotatebot(-20, speedchange/6)
             
             # Get current position in map frame
             try:
@@ -507,7 +625,6 @@ class AutoNav(Node):
             self.stopbot()
             current_x, current_y, angle = self.get_orientation()
 
-            current_coords = (current_x, current_y)
             estimated_heat_source = (current_x + self.laser_range[0] * math.cos(angle),
                                     current_y + self.laser_range[0] * math.sin(angle))
             self.get_logger().info(f'Estimated heat source: x={estimated_heat_source[0]}, y={estimated_heat_source[1]}')
@@ -532,42 +649,57 @@ class AutoNav(Node):
         except Exception as e:
             self.get_logger().error(f'Error in heat source verification: {str(e)}')
             return False
-
-            
+      
     def approach_heat_source(self):
         """Approach a heat source for further investigation"""
         try:
             
-            # Move towards the target
+            # Slowly Move towards the target
             twist = Twist()
             
             # Set linear speed (meters per second)
             twist.linear.x = speedchange  # Using the constant defined at the top
             self.publisher_.publish(twist)
+            start = time.time()
             # Start moving
             while True:
+                
+                
+                obstacle_direction = self.scan_front_obstacle()
                 # Check for obstacles in front
-                if self.scan_front_obstacle() == "front":
+                if obstacle_direction == "front":
                     self.get_logger().warn('Obstacle detected! Stopping movement')
                     self.stopbot()
-                    break
-                elif self.scan_front_obstacle() == "left":
+                    if self.ir_index != -1:
+                        self.get_logger().info('Heat source found?')
+                        break
+                elif obstacle_direction == "left":
                     self.get_logger().warn('Obstacle detected on the left! Rotating right')
-                    self.rotatebot(-10)
-                elif self.scan_front_obstacle() == "right":
+                    self.rotatebot(5)
+                elif obstacle_direction == "right":
                     self.get_logger().warn('Obstacle detected on the right! Rotating left')
-                    self.rotatebot(10)
+                    self.rotatebot(-5)
+                
+                self.get_logger().info('Moving towards heat source of %f speed' % twist.linear.x)
+                self.publisher_.publish(twist)
                 
                 #align with heat source
+                #TODO: see which column is on right and left
                 if self.ir_index == -1:
-                    self.get_logger().info('Heat source is not significant')
-                    return
-                elif self.ir_index < 2:
-                    self.get_logger().info('Heat source on the left')
+                    #look for heat source
                     self.rotatebot(2)
-                elif self.ir_index > 3:
+                    if time.time() - start > 5:
+                        self.get_logger().info('Heat source lost')
+                        break
+                elif self.ir_index < 3:
+                    start = time.time()
+                    self.get_logger().info('Heat source on the left')
+                    self.rotatebot(-2,speedchange/2)
+                elif self.ir_index > 4:
+                    start = time.time()
                     self.get_logger().info('Heat source on the right')
-                    self.rotatebot(-2)
+                    self.rotatebot(2, speedchange/2)
+                
                 
             
             if self.verify_heat_source() == False:
@@ -586,7 +718,7 @@ class AutoNav(Node):
             object_y = current_y + distance_from_object * math.sin(current_angle)
             #shoot balls
             
-            self.visited_heat_sources.add((object_x, object_y))
+            self.visited_heat_sources.push((object_x, object_y))
 
             self.save_heat_source_map()
             
@@ -625,7 +757,7 @@ class AutoNav(Node):
         if self.laser_range.size == 0:
             return None
         # Check for obstacles in front
-        front_angle = int(30/360 * len(self.laser_range))
+        front_angle = int(40.0/360 * len(self.laser_range))
         total_angle = front_angle * 2
         left_border = int(-front_angle + total_angle/3)
         right_border = int(front_angle - total_angle/3)
@@ -643,93 +775,172 @@ class AutoNav(Node):
             self.get_logger().warn('Obstacle detected in front')
             return "front"
         # Check for obstacles on the left
-        if np.nanmin(left_ranges) < stop_distance:
+        if np.nanmin(left_ranges) < side_distance:
             self.get_logger().warn('Obstacle detected on the left')
             return "left"
         # Check for obstacles on the right
-        if np.nanmin(right_ranges) < stop_distance:
+        if np.nanmin(right_ranges) < side_distance:
             self.get_logger().warn('Obstacle detected on the right')
             return "right"
 
         return None
     
-
-    def mover(self):
-
-        # try:
-        #     # initialize variable to write elapsed time to file
-        #     # contourCheck = 1
-
-        #     # find direction with the largest distance from the Lidar,
-        #     # rotate to that direction, and start moving
-
-        #     #create route
-            
-        #     while rclpy.ok():
-                    
-        #         # allow the callback functions to run
-        #         rclpy.spin_once(self)
-
-        # # except Exception as e:
-        # #    print(e)
+    def return_all_nodes_in_map(self):
+        '''Get all nodes in the map and returns a list of all nodes'''
+        # Get the occupancy grid
+        occ_grid = self.occdata
+        # Create a list to store the nodes
+        nodes = []
+        # Iterate through the occupancy grid
+        #pad the occupancy grid to have size divisible by 3
+        occ_grid = F.pad(occ_grid, (0, 3 - occ_grid.shape[1] % 3, 0, 3 - occ_grid.shape[0] % 3), value=-1) 
+        # Apply max pooling to the occupancy grid
+        occ_grid = occ_grid.reshape(1,1,occ_grid.shape[0], occ_grid.shape[1])
+        occ_grid_pooled = F.max_pool2d(occ_grid, 3,3).reshape(occ_grid.shape[2]//3, occ_grid.shape[3]//3)
         
-        # # Ctrl-c detected
-        # finally:
-        #     # stop moving
-        #     self.stopbot()
+        # Iterate through the occupancy grid
+        for y in range(occ_grid_pooled.shape[0]):
+            for x in range(occ_grid_pooled.shape[1]):
+                # Check if the cell is wall
+                if occ_grid_pooled[y, x] <= 70:
+                    # Convert pooled grid coordinates back to map coordinates 
+                    map_x = (x * 3 + 1.5) * self.map_res + self.map_origin.x
+                    map_y = (y * 3 + 1.5) * self.map_res + self.map_origin.y
+                    # Create a MapNode object and add it to the list
+                    node = MapNode(map_x, map_y)
+                    nodes.append(node)
+        return nodes
+        
+    def check_is_stuck(self, last_x, last_y):
+        """Check if the TurtleBot is stuck"""
+        current_x, current_y, _ = self.get_orientation()
+        distance_moved = math.sqrt((current_x - last_x)**2 + (current_y - last_y)**2)
+        if distance_moved < 0.1:
+            self.get_logger().warn('TurtleBot is stuck')
+            return True
+        return False
+    
+    def unstuck(self):
+        '''Unstuck code'''
+        twist = Twist()
+        twist.linear.x = -speedchange
+        self.publisher_.publish(twist)
+        while self.laser_range[len(self.laser_range)//2] < 0.5:
+            time.sleep(0.1)
+        self.stopbot()
+    
+    def mover(self):
 
 
         '''traversal code'''
         start_time = time.time()
-        self.path = self.plan_route()
-        while len(self.path) == 0:
-            self.path = self.plan_route()
-            if time.time() - start_time > 10:
-                self.get_logger().info('No path found') 
-                return
+        self.path = self.plan_route(True)
         
-        self.nextcoords = self.path[1]
-        self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+        while len(self.path) == 0:
+            self.path = self.plan_route(True)
+            if time.time() - start_time > 10:
+                
+                self.get_logger().info('No path found from start') 
+                return
+            
+        final_x, final_y, _ = self.get_orientation()
+        final_list = []
+        final_gambit = False
+
         while rclpy.ok():
-            if len(self.visited_heat_sources)!=2 and self.ir_index != -1 and self.verify_heat_source(1.2):
+            self.get_logger().info('not 2 heatsources : %s\n heat source detected:%s\n new heat source:%s\n' % 
+                                   (len(self.visited_heat_sources)!=1, self.ir_index != -1, self.verify_heat_source(1.2)))
+            
+            #check if bot is stuck
+            if time.time() - start_time > 10:
+                if self.check_is_stuck(final_x, final_y):
+                    self.get_logger().info('TurtleBot is stuck, unsticking')
+                    self.unstuck()
+                start_time = time.time()
+                final_x, final_y, _ = self.get_orientation()
+            
+            #renews path normally
+            while len(self.path) == 0 and not final_gambit:
+                tries = 10
+                while tries > 0:
+                    self.get_logger().info('No path found, trying again')
+                    self.path = self.plan_route(True)
+                    if len(self.path) != 0:
+                        break
+                    tries -= 1
+
+                #map should be fully explored but heat sources are not found
+                if tries == 0 and len(self.visited_heat_sources) != 2:
+                    final_list = self.return_all_nodes_in_map()
+                    final_gambit = True
+
+            #normally get next node
+               
+            self.nextcoords = self.path.pop(0)
+            self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+
+            if len(self.visited_heat_sources)!=1 and self.ir_index != -1 and self.verify_heat_source(1.2):
 
                 self.approach_heat_source()
-                self.path = self.plan_route()
             
-            else:
+            elif not final_gambit:
+
+                if random.random() < 0.05:
+                    self.get_logger().info('Replanning route due to random chance')
+                    self.path = self.plan_route(True)
+                    continue
+
+                if random.random() < 0.05:
+                    toSpin = True
+                    current_x, current_y, _ = self.get_orientation()
+                    for spins in self.spin_coords:
+                        dist = math.sqrt((spins[0] - current_x)**2 + (spins[1] - current_y)**2)
+                        if dist < 0.5:
+                            self.get_logger().info('Already spun here')
+                            toSpin = False
+                            break
+                    if toSpin:
+                        self.get_logger().info('autistic spin start')
+                        for i in range(0,4):
+                            self.rotatebot(90)
+                        self.get_logger().info('autistic spin end')
+                        self.spin_coords.append((current_x, current_y))
                 
                 self.travel_to_node(self.nextcoords)
-                self.path.pop(0)
-                if len(self.path) == 1:
-                    tries =  10
-                    while tries != 0:
-                        
-                        self.path=self.plan_route()
-                        if len(self.path) == 0:
-                            tries -= 1
-                            time.sleep(1)
-                        else:
-                            break
-                    if tries == 0:
-                        self.get_logger().info('No path found')
-                        break
-                self.nextcoords = self.path[1]
-        self.stopbot()
+                
+                
+            else:
+                if len(final_list) == 0 and len(self.path) == 0:
+                    self.get_logger().info('Self destructing')
+                    break
+                if len(self.path) == 0:
+                    new_dest = final_list.pop(0)
+                    self.path = self.plan_route(True, new_dest)
+                    if len(self.path) == 0:
+                        continue
+                self.travel_to_node(self.nextcoords)
 
-
+            if self.bonk_count > 4:
+                self.get_logger().info('Bonked too many times, replanning')
+                self.path = self.plan_route(True)
+                self.bonk_count = 0
+                
         
-            
-
-
-            
-
-
+        self.stopbot()
+        
 
 def main(args=None):
     rclpy.init(args=args)
 
     auto_nav = AutoNav()
-    auto_nav.mover()
+    try:
+        auto_nav.mover()
+        #test_heat_source_approach(auto_nav)
+    except KeyboardInterrupt:
+        auto_nav.get_logger().info('Keyboard interrupt, shutting down')
+
+    finally:
+        auto_nav.stopbot()
 
     # create matplotlib figure
     # plt.ion()
