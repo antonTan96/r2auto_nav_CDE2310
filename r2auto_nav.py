@@ -38,7 +38,7 @@ import random
 
 
 # constants
-rotatechange = 0.3
+rotatechange = 0.22
 speedchange = 0.12
 occ_bins = [-1, 0, 100, 101]
 stop_distance = 0.28
@@ -664,25 +664,8 @@ class AutoNav(Node):
             # Start moving
             while True:
                 
-                
-                obstacle_direction = self.scan_front_obstacle()
-                # Check for obstacles in front
-                if obstacle_direction == "front":
-                    self.get_logger().warn('Obstacle detected! Stopping movement')
-                    self.stopbot()
-                    if self.ir_index != -1:
-                        self.get_logger().info('Heat source found?')
-                        break
-                elif obstacle_direction == "left":
-                    self.get_logger().warn('Obstacle detected on the left! Rotating right')
-                    self.rotatebot(5)
-                elif obstacle_direction == "right":
-                    self.get_logger().warn('Obstacle detected on the right! Rotating left')
-                    self.rotatebot(-5)
-                
                 self.get_logger().info('Moving towards heat source of %f speed' % twist.linear.x)
                 self.publisher_.publish(twist)
-                
                 #align with heat source
                 #TODO: see which column is on right and left
                 if self.ir_index == -1:
@@ -695,10 +678,33 @@ class AutoNav(Node):
                     start = time.time()
                     self.get_logger().info('Heat source on the left')
                     self.rotatebot(-2,speedchange/2)
+                    continue
                 elif self.ir_index > 4:
                     start = time.time()
                     self.get_logger().info('Heat source on the right')
                     self.rotatebot(2, speedchange/2)
+                    continue
+                
+                obstacle_direction = self.scan_front_obstacle()
+                # Check for obstacles in front
+                if obstacle_direction == "front":
+                    self.get_logger().warn('Obstacle detected! Stopping movement')
+                    self.stopbot()
+                    if self.ir_index != -1:
+                        self.get_logger().info('Heat source found?')
+                        break
+                elif obstacle_direction == "left":
+                    
+                    self.get_logger().warn('Obstacle detected on the left! Rotating right')
+                    self.rotatebot(20, speedchange/6)
+                elif obstacle_direction == "right":
+                    self.get_logger().warn('Obstacle detected on the right! Rotating left')
+                    self.rotatebot(-20, speedchange/6)
+                
+                
+                
+                
+                
                 
                 
             
@@ -718,7 +724,7 @@ class AutoNav(Node):
             object_y = current_y + distance_from_object * math.sin(current_angle)
             #shoot balls
             
-            self.visited_heat_sources.push((object_x, object_y))
+            self.visited_heat_sources.append((object_x, object_y))
 
             self.save_heat_source_map()
             
@@ -825,8 +831,9 @@ class AutoNav(Node):
         twist = Twist()
         twist.linear.x = -speedchange
         self.publisher_.publish(twist)
-        while self.laser_range[len(self.laser_range)//2] < 0.5:
-            time.sleep(0.1)
+        self.get_logger().info('object is %f away' % self.laser_range[len(self.laser_range)//2])
+        while self.laser_range[len(self.laser_range)//2] < stop_distance:
+            time.sleep(0.5)
         self.stopbot()
     
     def mover(self):
@@ -871,13 +878,14 @@ class AutoNav(Node):
 
                 #map should be fully explored but heat sources are not found
                 if tries == 0 and len(self.visited_heat_sources) != 2:
+                    self.get_logger().warn('No path found, trying final gambit')
                     final_list = self.return_all_nodes_in_map()
                     final_gambit = True
 
             #normally get next node
-               
-            self.nextcoords = self.path.pop(0)
-            self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+            if len(self.path) != 0:                
+                self.nextcoords = self.path.pop(0)
+                self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
 
             if len(self.visited_heat_sources)!=1 and self.ir_index != -1 and self.verify_heat_source(1.2):
 
@@ -901,10 +909,17 @@ class AutoNav(Node):
                             break
                     if toSpin:
                         self.get_logger().info('autistic spin start')
-                        for i in range(0,4):
-                            self.rotatebot(90)
+                        found = False
+                        for _ in range(0,12):
+                            self.rotatebot(30)
+                            if self.ir_index != -1:
+                                found = True
+                                self.get_logger().info('Heat source detected maybe')
+                                break
                         self.get_logger().info('autistic spin end')
                         self.spin_coords.append((current_x, current_y))
+                        if found:
+                            continue
                 
                 self.travel_to_node(self.nextcoords)
                 
