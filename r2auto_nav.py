@@ -30,6 +30,7 @@ import time
 from auto_nav.mapNode import MapNode
 from auto_nav.tests.test_heat_source_approach import test_heat_source_approach
 from auto_nav.tests.test_turn import test_turn
+from auto_nav.tests.test_visualize import test_visualize
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
@@ -41,11 +42,13 @@ import random
 rotatechange = 0.3
 speedchange = 0.17
 occ_bins = [-1, 0, 100, 101]
-stop_distance = 0.25
-side_distance = 0.2
-edge_distance = 0.35
+stop_distance = 0.3
+side_distance = 0.3
+edge_distance = 0.3
 scanfile = 'lidar.txt'
 mapfile = 'map.txt'
+ 
+
 
 
 # code from https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
@@ -117,6 +120,10 @@ class AutoNav(Node):
             qos_profile_sensor_data)
         self.scan_subscription  # prevent unused variable warning
         self.laser_range = np.array([])
+
+        self.back_range = range(len(self.laser_range)//2 - 3, len(self.laser_range)//2 + 3)
+        self.default_front_range = range(len(self.laser_range)//2 - 15, len(self.laser_range)//2 + 15)
+
         # Create a tf2 buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer,self)
@@ -146,7 +153,7 @@ class AutoNav(Node):
         #interactive image
         plt.ion()
         self.fig, self.ax = plt.subplots()
-        self.image = self.ax.imshow(np.zeros((1,1)), cmap='gray')
+        self.image = self.ax.imshow(np.zeros((1,1)), cmap='hot')
         plt.colorbar(self.image, ax=self.ax)
         plt.title("Occupancy Grid with Path")
 
@@ -379,9 +386,7 @@ class AutoNav(Node):
         current_node = None
         while len(frontier) > 0:
             current_node = frontier.pop(0)
-            if occ_grid_pooled[int(current_node.y), int(current_node.x)] >= WALL_THRESHOLD:
-                #skip occupied nodes
-                continue
+            
             visited.add(current_node)
             #self.get_logger().info(f'Current node: x={current_node.x}, y={current_node.y}, map_value={occ_grid_pooled[current_node.x, current_node.y]}')
             if goal is None:
@@ -392,7 +397,13 @@ class AutoNav(Node):
             else:
                 if current_node.x == goal_pooled_x and current_node.y == goal_pooled_y:
                     self.get_logger().info(f'Found goal')
+                    found_path = True
                     break
+
+            if occ_grid_pooled[int(current_node.y), int(current_node.x)] >= WALL_THRESHOLD:
+                #skip occupied nodes
+                continue
+            
             neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[1], occ_grid_pooled.shape[0])
             
             # Sort neighbors by distance to walls (prefer cells farther from walls)
@@ -557,8 +568,33 @@ class AutoNav(Node):
         self.get_logger().info(f'Rotating {angle_diff} degrees to face waypoint')
         
         # Rotate to face the target
-        self.rotatebot(angle_diff)
+        # segregate into 10 degree increments
+        if abs(angle_diff) < 10: 
+            self.rotatebot(angle_diff)
+        else:
+            times = abs(angle_diff // 10)
+            self.get_logger().info(f'Rotating {times} times')
+            direction = -1 if angle_diff < 0 else 1
+            while(times > 0):
+                if self.verify_heat_source():
+                    self.get_logger().info('Heat source found')
+                    return
+                self.rotatebot(direction * 10)
+                times -= 1
+                self.stopbot()
+
+                if self.laser_range[self.back_range].min() < stop_distance and self.laser_range[self.default_front_range].min() > stop_distance:
+                    self.get_logger().info('going forward')
+                    self.stopbot()
+                    twist = Twist()
         
+                    # Set linear speed (meters per second)
+                    twist.linear.x = speedchange
+                    time.sleep(0.2)
+
+                    
+                
+            self.rotatebot(angle_diff - (direction * 10 * abs(angle_diff // 10)))
         
         # Move towards the target
         twist = Twist()
@@ -595,12 +631,10 @@ class AutoNav(Node):
                     break
                 elif obstacle_direction == "left":
                     self.get_logger().warn('Obstacle detected on the left! Rotating right')
-                    self.rotatebot(20, -speedchange/10)
-                    self.rotatebot(-20)
+                    self.rotatebot(20, -speedchange/4)
                 elif obstacle_direction == "right":
                     self.get_logger().warn('Obstacle detected on the right! Rotating left')
-                    self.rotatebot(-20, -speedchange/10)
-                    self.rotatebot(20)
+                    self.rotatebot(-20, -speedchange/4)
                 elif obstacle_direction == "right edge":
                     self.get_logger().warn('Obstacle detected on the right edge! Rotating left')
                     self.rotatebot(-20, speedchange/10)
@@ -637,6 +671,18 @@ class AutoNav(Node):
         # Calculate distance to target
         distance = math.sqrt((next_node.x - current_x)**2 + (next_node.y - current_y)**2)
         return distance
+    
+    def find_path_to_heat_source(self):
+        current_x, current_y, angle = self.get_orientation()
+
+        estimated_heat_source = (current_x + self.laser_range[0] * math.cos(angle),
+                                current_y + self.laser_range[0] * math.sin(angle))
+        self.get_logger().info(f'Estimated heat source: x={estimated_heat_source[0]}, y={estimated_heat_source[1]}')
+
+        path = self.plan_route(visualize=True, goal=MapNode(estimated_heat_source[0], estimated_heat_source[1]))
+
+        return path
+
     
     def verify_heat_source(self, proximity_threshold=0.5):
         """
@@ -806,12 +852,12 @@ class AutoNav(Node):
         if self.laser_range.size == 0:
             return None
         # Check for obstacles in front
-        front_angle = int(60.0/360 * len(self.laser_range))
+        front_angle = int(65.0/360 * len(self.laser_range))
         total_angle = front_angle * 2
         left_border = int(-front_angle + total_angle/5)
-        mid_left_border = int(left_border + total_angle/5)
+        mid_left_border = int(left_border + total_angle/5 + 5)
         right_border = int(front_angle - total_angle/5)
-        mid_right_border = int(right_border - total_angle/5)
+        mid_right_border = int(right_border - total_angle/5 - 5)
 
         left_edge_angles = range(-front_angle, left_border)
         left_angles = range(left_border,mid_left_border)
@@ -881,25 +927,6 @@ class AutoNav(Node):
                     node = MapNode(map_x, map_y)
                     nodes.append(node)
         return nodes
-        
-    def check_is_stuck(self, last_x, last_y):
-        """Check if the TurtleBot is stuck"""
-        current_x, current_y, _ = self.get_orientation()
-        distance_moved = math.sqrt((current_x - last_x)**2 + (current_y - last_y)**2)
-        if distance_moved < 0.1:
-            self.get_logger().warn('TurtleBot is stuck')
-            return True
-        return False
-    
-    def unstuck(self):
-        '''Unstuck code'''
-        twist = Twist()
-        twist.linear.x = -speedchange
-        self.publisher_.publish(twist)
-        self.get_logger().info('object is %f away' % self.laser_range[len(self.laser_range)//2])
-        while self.laser_range[len(self.laser_range)//2] < stop_distance:
-            time.sleep(0.5)
-        self.stopbot()
     
     def mover(self):
 
@@ -915,7 +942,6 @@ class AutoNav(Node):
                 self.get_logger().info('No path found from start') 
                 return
             
-        final_x, final_y, _ = self.get_orientation()
         final_list = []
         final_gambit = False
 
@@ -927,13 +953,6 @@ class AutoNav(Node):
                 self.get_logger().info('Waiting for launch to end')
                 time.sleep(0.5)
             
-            #check if bot is stuck
-            if time.time() - start_time > 10:
-                if self.check_is_stuck(final_x, final_y):
-                    self.get_logger().info('TurtleBot is stuck, unsticking')
-                    self.unstuck()
-                start_time = time.time()
-                final_x, final_y, _ = self.get_orientation()
             
             #renews path normally
             while len(self.path) == 0 and not final_gambit:
@@ -957,9 +976,36 @@ class AutoNav(Node):
                 self.nextcoords = self.path.pop(0)
                 self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
 
-            if len(self.visited_heat_sources)!=1 and self.ir_index != -1 and self.verify_heat_source(1.2):
+            if len(self.visited_heat_sources)!=1 and self.verify_heat_source(1.2):
+                heat_source_path = self.find_path_to_heat_source()
+                while len(heat_source_path) != 0:
+                    self.get_logger().info('Found heat source, approaching')
+                    self.nextcoords = heat_source_path.pop(0)
+                    self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
+                    self.travel_to_node(self.nextcoords)
 
-                self.approach_heat_source()
+                if np.min(self.laser_range) < 0.2:
+                    self.get_logger().info('too close to wall')
+                    min_angle = np.argmin(self.laser_range)/len(self.laser_range) * 360
+                    self.rotatebot(min_angle)
+                    to_publish = Twist()
+                    to_publish.linear.x = -speedchange
+                    self.publisher_.publish(to_publish)
+                    time.sleep(0.2)
+                    self.stopbot()
+                    
+                
+                if self.ir_index != -1:
+                    self.get_logger().info('Heat source found, approaching')
+                    self.approach_heat_source()
+                else:
+                    for _ in range(36):
+                        self.rotatebot(10)
+                        if self.verify_heat_source(1.2):
+                            self.get_logger().info('Heat source found')
+                            self.approach_heat_source()
+                            break
+
             
             elif not final_gambit:
 
@@ -968,7 +1014,7 @@ class AutoNav(Node):
                     self.path = self.plan_route(True)
                     continue
 
-                if random.random() < 0.005 and not np.any(self.laser_range < 0.15):
+                if random.random() < 0.007 and not np.any(self.laser_range < 0.15):
 
                     toSpin = True
                     current_x, current_y, _ = self.get_orientation()
@@ -981,8 +1027,8 @@ class AutoNav(Node):
                     if toSpin:
                         self.get_logger().warn('autistic spin start')
                         found = False
-                        for _ in range(0,12):
-                            self.rotatebot(30)
+                        for _ in range(0,36):
+                            self.rotatebot(10)
                             if self.ir_index != -1:
                                 found = True
                                 self.get_logger().info('Heat source detected maybe')
@@ -1020,8 +1066,8 @@ def main(args=None):
 
     auto_nav = AutoNav()
     try:
-        auto_nav.mover()
-        #test_turn(auto_nav)
+        #auto_nav.mover()
+        test_visualize(auto_nav)
     except KeyboardInterrupt:
         auto_nav.get_logger().info('Keyboard interrupt, shutting down')
 
