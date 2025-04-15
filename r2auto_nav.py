@@ -39,6 +39,8 @@ import random
 
 
 # constants
+heat_source_radius = 0.4
+heat_sources = 2
 rotatechange = 0.3
 speedchange = 0.17
 occ_bins = [-1, 0, 100, 101]
@@ -153,7 +155,7 @@ class AutoNav(Node):
         #interactive image
         plt.ion()
         self.fig, self.ax = plt.subplots()
-        self.image = self.ax.imshow(np.zeros((1,1)), cmap='hot')
+        self.image = self.ax.imshow(np.zeros((1,1)), vmin=-1, vmax=100)
         plt.colorbar(self.image, ax=self.ax)
         plt.title("Occupancy Grid with Path")
 
@@ -378,8 +380,6 @@ class AutoNav(Node):
         visited = set()
         visited.add(start)
         if len(frontier) == 0:
-            if visualize:
-                self.visualize_path([start], occ_grid_pooled)
             return []
         
         
@@ -403,7 +403,7 @@ class AutoNav(Node):
             if occ_grid_pooled[int(current_node.y), int(current_node.x)] >= WALL_THRESHOLD:
                 #skip occupied nodes
                 continue
-            
+
             neighbors = current_node.generate_neighbors(occ_grid_pooled.shape[1], occ_grid_pooled.shape[0])
             
             # Sort neighbors by distance to walls (prefer cells farther from walls)
@@ -421,8 +421,6 @@ class AutoNav(Node):
         visualize_path = []
         if not found_path or current_node is None:
             self.get_logger().info('No path found')
-            if visualize:
-                self.visualize_path([start], occ_grid_pooled)
             return []
         
         # Reconstruct path and shift nodes away from walls
@@ -431,8 +429,8 @@ class AutoNav(Node):
             
             # Shift node away from nearby walls
             shift_x, shift_y = 0, 0
-            max_shift = 2  # Maximum shift amount
-            wall_influence_distance = 3  # How far walls influence the path
+            max_shift = 1  # Maximum shift amount
+            wall_influence_distance = 2  # How far walls influence the path
             
             # Check surrounding cells and compute shift vector
             for dy in range(-wall_influence_distance, wall_influence_distance + 1):
@@ -503,6 +501,7 @@ class AutoNav(Node):
         
         if visualize:
             np.savetxt('visited_map.txt', visited_grid)
+            
             self.visualize_path(visualize_path, occ_grid_pooled)
         
         return path
@@ -514,7 +513,6 @@ class AutoNav(Node):
         # Mark the path on the occupancy grid
         path_grid = np.copy(occ_grid_copy)
         path_grid[np.where(occ_grid_copy >= 70)] = 100
-        path_grid[np.where(occ_grid_copy < 70)] = 0
         start = path.pop(0)
         #self.get_logger().info(f'Path node: x={start.x}, y={start.y}')
         
@@ -576,7 +574,7 @@ class AutoNav(Node):
             self.get_logger().info(f'Rotating {times} times')
             direction = -1 if angle_diff < 0 else 1
             while(times > 0):
-                if self.verify_heat_source():
+                if self.verify_heat_source(heat_source_radius):
                     self.get_logger().info('Heat source found')
                     return
                 self.rotatebot(direction * 10)
@@ -684,7 +682,7 @@ class AutoNav(Node):
         return path
 
     
-    def verify_heat_source(self, proximity_threshold=0.5):
+    def verify_heat_source(self, proximity_threshold=1.2):
         """
         Verify and log heat source detection with robust location tracking
         
@@ -757,6 +755,7 @@ class AutoNav(Node):
                         break
                 if self.ir_index == -1:
                     #look for heat source
+                    self.stopbot()
                     self.rotatebot(2)
                     if time.time() - start > 5:
                         self.get_logger().info('Heat source lost')
@@ -785,12 +784,8 @@ class AutoNav(Node):
                 
                 
                 
-                
-                
-                
-                
             
-            if self.verify_heat_source() == False:
+            if self.verify_heat_source(heat_source_radius) == False:
                 self.get_logger().info('Heat source is visited')
                 return
             
@@ -947,11 +942,13 @@ class AutoNav(Node):
 
         while rclpy.ok():
             self.get_logger().info('not 2 heatsources : %s\n heat source detected:%s\n new heat source:%s\n' % 
-                                   (len(self.visited_heat_sources)!=1, self.ir_index != -1, self.verify_heat_source(1.2)))
+                                   (len(self.visited_heat_sources)!=1, self.ir_index != -1, self.verify_heat_source(heat_source_radius)))
             
             while self.launching == True:
                 self.get_logger().info('Waiting for launch to end')
                 time.sleep(0.5)
+            
+            
             
             
             #renews path normally
@@ -976,7 +973,7 @@ class AutoNav(Node):
                 self.nextcoords = self.path.pop(0)
                 self.get_logger().info('Next node is: x=%f, y=%f'% (self.nextcoords.x, self.nextcoords.y))
 
-            if len(self.visited_heat_sources)!=1 and self.verify_heat_source(1.2):
+            if len(self.visited_heat_sources) != heat_sources and self.verify_heat_source(heat_source_radius):
                 heat_source_path = self.find_path_to_heat_source()
                 while len(heat_source_path) != 0:
                     self.get_logger().info('Found heat source, approaching')
@@ -1001,7 +998,7 @@ class AutoNav(Node):
                 else:
                     for _ in range(36):
                         self.rotatebot(10)
-                        if self.verify_heat_source(1.2):
+                        if self.verify_heat_source(heat_source_radius):
                             self.get_logger().info('Heat source found')
                             self.approach_heat_source()
                             break
@@ -1056,6 +1053,12 @@ class AutoNav(Node):
                 self.get_logger().warn('Bonked too many times, replanning')
                 self.path = self.plan_route(True)
                 self.bonk_count = 0
+            
+            if len(self.visited_heat_sources) == heat_sources:
+                if len(self.plan_route(True)) == 0:
+                    self.stopbot()
+                    self.get_logger().info('Mission Success!')
+                    return
                 
         
         self.stopbot()
@@ -1066,8 +1069,8 @@ def main(args=None):
 
     auto_nav = AutoNav()
     try:
-        #auto_nav.mover()
-        test_visualize(auto_nav)
+        auto_nav.mover()
+        #test_visualize(auto_nav)
     except KeyboardInterrupt:
         auto_nav.get_logger().info('Keyboard interrupt, shutting down')
 
