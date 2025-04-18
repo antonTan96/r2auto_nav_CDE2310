@@ -77,5 +77,5 @@ The main navigation control node for the Turtlebot ICBM.
     * `goal` : The coordinates that the Turtlebot ICBM wants to navigate to.
 * Retuns: A list of nodes to travel to until the goal is reached. If no goal is specified, a path to the nearest unexplored area is returned.
 * Effects: If `visualize` is True, then copies of maps containing different information will be saved.
-![plan_route diagram](.\flow_chart_diagrams\plan_route_flow_chart_diagram.png)
+![plan_route diagram](./flow_chart_diagrams/plan_route_flow_chart_diagram.png)
 
