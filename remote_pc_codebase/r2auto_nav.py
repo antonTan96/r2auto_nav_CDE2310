@@ -85,9 +85,6 @@ class AutoNav(Node):
         
         # self.get_logger().info('Created subscriber')
         # initialize variables
-        self.roll = 0
-        self.pitch = 0
-        self.yaw = 0
         self.path = [] 
         self.next_coords = MapNode(0,0)
         self.bonk_count = 0
