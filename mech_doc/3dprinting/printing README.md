@@ -1,6 +1,6 @@
-# TurtleBot ICBM Launch Mechanism
+# ICBM Launch Printing Info
 
-This document provides detailed instructions for printing, assembling, and integrating the ICBM (Intercontinental Ballistic Mechanism) launch piece onto your TurtleBot.
+This document provides detailed instructions for printing
 
 ---
 
