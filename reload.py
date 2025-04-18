@@ -1,8 +1,8 @@
 import time
 from adafruit_servokit import ServoKit
 
-idle = 0
-fire = 180
+idle = [30,40,40,40,40,40,35,40,40]
+fire = 0
 
 kit = ServoKit(channels=16)
 active = [0,1,2,4,5,6,8,9,10]
@@ -13,19 +13,19 @@ try:
     if tube_no < 0:
         for i in range(9): 
             kit.servo[active[i]].angle = fire
-        for i in range(9):
-            next = input("Press Enter When Tube " + str(i) + " (Servo Channel " + str(active[i]) + ") Ready")
-            kit.servo[active[i]].angle = idle
+        for i in range(9): 
+            next = input("Press Enter When Tube " + str(i+1) + " (Servo Channel " + str(active[i]) + ") Ready")
+            kit.servo[active[i]].angle = idle[i]
             print("Tube " + str(i) + " (Servo Channel " + str(active[i]) + ") Ready" )
         print("All Servo Ready")
     else: 
         kit.servo[active[tube_no]].angle = fire
         next = input("Press Enter When Tube " + str(tube_no) + " (Servo Channel " + str(active[tube_no]) + ") Ready")
-        kit.servo[active[tube_no]].angle = idle
+        kit.servo[active[tube_no]].angle = idle[tube_no]
         print("Tube " + str(tube_no) + " (Servo Channel " + str(active[tube_no]) + ") Ready" )
 except Exception as e:
-    while(True):
-        print(1)
+    print(e)
+        
 
 
 

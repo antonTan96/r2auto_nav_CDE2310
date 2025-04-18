@@ -1,1 +1,0 @@
-# For electrical documentation
