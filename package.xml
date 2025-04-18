@@ -20,6 +20,7 @@
     <exec_depend>nav_msgs</exec_depend>
     <exec_depend>std_msgs</exec_depend>
     <exec_depend>adafruit_amg88xx</exec_depend>
+    <exec_depend>adafruit_servokit</exec_depend>
     
   </export>
 </package>
