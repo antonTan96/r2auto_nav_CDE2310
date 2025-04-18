@@ -16,6 +16,6 @@ This document provides detailed instructions for acquiring and assembling the So
 ### Troubleshooting and rebuilding the bot
 - After importing, you may face an error where SolidWorks will ask you to rebuild the file due to missing components
 - Click rebuild and this will result in SolidWorks creating part files which will end up in the dedicated CAD folder
-- The assembly file downloaded from the website has the wrong waffle plate file which will require you to replace it
+- NOTE that the assembly file downloaded from the website has the wrong waffle plate file which will require you to replace it
 - The correct waffle plate files can be found in the repository for you to replace in SolidWorks Assembly
 - Reference layers can also be found in the repository for you to reference or replace completely if you face any errors replacing the waffle plate
