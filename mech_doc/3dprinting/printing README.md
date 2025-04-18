@@ -1,1 +1,16 @@
+# TurtleBot ICBM Launch Mechanism
 
+This document provides detailed instructions for printing, assembling, and integrating the ICBM (Intercontinental Ballistic Mechanism) launch piece onto your TurtleBot.
+
+---
+
+## Printing Instructions
+
+### Self-Printing
+- Open the files in Bambu Studio
+- Support structures and print types have been optimised
+- Make sure to change the filament settings based on your preferred type of filament to use
+
+### Printing with iDP
+- **Not reccommended**: Too expensive to print all in one piece
+- Smaller sub parts are provided for tweaks and testing
