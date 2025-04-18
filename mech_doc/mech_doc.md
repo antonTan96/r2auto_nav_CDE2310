@@ -64,7 +64,7 @@ This document provides detailed instructions for printing, assembling, and integ
 - **Launch Height**: ~150 cm
 - **Required Launch Energy**: ~0.0132 J
 - **Maximum Compression**: 3.75 cm
-- **Spring Constant (k)**: ~18.85 N/m (verified as 18.77 N/m, acceptable variation)
+- **Spring Constant (k)**: ~18.77 N/m
 
 ---
 
@@ -76,11 +76,12 @@ This document provides detailed instructions for printing, assembling, and integ
 
 ---
 
-## Suggested Additional Details (Optional)
-- Troubleshooting tips for common mechanical or wiring issues.
+## Suggested Additional Details
+- Common issue face is the DC-DC converter wire disconnecting from the OpenCR board which required the disassembly of the entire TurtleBot
+- Ensure all wires are secured down
 
 ---
 
-For further support or inquiries, please contact the project team or refer to the provided project documentation.
+For further support or inquiries, please contact CDE2310 Group 3 AY24/25 or refer to the provided project documentation.
 ```
 
