@@ -64,7 +64,7 @@ The main navigation control node for the Turtlebot ICBM.
     * `rot_angle` : The angle (degrees) of which the Turtlebot3 ICBM should rotate.
     * `speed` : The linear velocity (meters/second) of the Turtlebot3 ICBM when rotating.
 * Returns: None
-* Effects: The Turtlebot3 ICBM will rotate `rot_angle` degrees
+* Effects: The Turtlebot3 ICBM will rotate `rot_angle` degrees.
 
 #### stop_bot
 * Arguments: None
@@ -79,3 +79,108 @@ The main navigation control node for the Turtlebot ICBM.
 * Effects: If `visualize` is True, then copies of maps containing different information will be saved.
 ![plan_route diagram](./flow_chart_diagrams/plan_route_flow_chart_diagram.png)
 
+#### visualize path
+* Arguments:
+    * `path` : A list of coordinates to visualize
+    * `poolex_occ_grid` : The map to visualize on
+* Returns: Nothing
+* Effects: copies of maps containing different information will be saved and the current path of the Turtlebot ICBM will be shown on screen.
+
+#### travel_to_node
+* Arguments:
+    * `next_node` : The destination to travel to
+* Returns: Nothing
+* Effects: The Turtlebot ICBM will move towards the next node
+![navigate diagram](./flow_chart_diagrams/navigate_next_flow_chart_diagram.png)
+
+#### get_distance_to_next_node
+* Arguments:
+    * `next_node` : The destination to travel to
+* Returns: The distance from the Turtlebot ICBM to next_node
+
+#### find_path_to_heat_source
+* Arguments: None
+* Returns: A path to the heat_source, assuming there is a heat source in front.
+
+#### verify_heat_source
+* Arguments: 
+    * `proximity_threshold` : The minimum distance (meters) between heat sources.
+* Returns: True if a new heat source is detected, False otherwise.
+![verify heat source diagram](./flow_chart_diagrams/detect_new_heat_source_flow_chart_diagram.png)
+
+#### approach_heat_source
+* Arguments: None
+* Returns: None
+* Effects: The Turtlebot ICBM will constantly go in the direction of the heat source.
+![approach heat source diagram](./flow_chart_diagrams/approach_heat_source_flow_chart_diagram.png)
+
+#### save_heat_source_map
+* Arguments: None
+* Returns: None
+* Effects: A copy of the occupancy map with visited heat sources marked is saved.
+
+#### scan_front_obstacle
+* Arguments: None
+* Returns: A string representing where an obstable is located relative to the Turtlebot ICBM.
+
+#### mover
+* Arguments: None
+* Returns: None
+The main program of the Turtlebot ICBM. Currently has 2 modes (normal and final gambit) which affects the navigation algorithm.
+![nav mode 1](./flow_chart_diagrams/autonav_normal_flow_chart_diagram.png)
+![nav mode 2](./flow_chart_diagrams/autonav_extreme_flow_chart_diagram.png)
+
+
+### ROS2 topics graph
+![topics](./flow_chart_diagrams/ros2_topics_graph.png) 
+
+
+## Testing guide
+To test certain components of the Turtlebot ICBM, it is recommended to write tests in their own file(s) and put them in the `tests` folder.
+
+This section will go over the recommended steps to set up testing on the Turtlebot ICBM.
+
+1. Comment out `self.mover` in `main`.
+```python
+def main(args=None):
+    rclpy.init(args=args)
+
+    auto_nav = AutoNav()
+    try:
+        #auto_nav.mover()
+    except KeyboardInterrupt:
+        auto_nav.get_logger().info('Keyboard interrupt, shutting down')
+
+    finally:
+        auto_nav.stopbot()
+``` 
+
+2. Add in your test function (assume testing `to_test` in `function_test.py` which takes in auto_nav as an argument).
+
+```python
+import auto_nav.tests as robot_tests
+def main(args=None):
+    rclpy.init(args=args)
+
+    auto_nav = AutoNav()
+    try:
+        #auto_nav.mover()
+        robot_tests.function_test.to_test(auto_nav)
+    except KeyboardInterrupt:
+        auto_nav.get_logger().info('Keyboard interrupt, shutting down')
+
+    finally:
+        auto_nav.stopbot()
+```
+
+3. Build `auto_nav` in the designated workspace.
+```bash
+$ cd ~/turtlebot_ws
+$ colcon build 
+$ source install/setup.bash
+```
+
+4. Run `auto_nav`.
+```bash
+$ ros2 run auto_nav r2auto_nav
+```
