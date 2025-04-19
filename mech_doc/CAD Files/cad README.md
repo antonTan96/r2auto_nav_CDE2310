@@ -10,7 +10,7 @@ This document provides detailed instructions for acquiring and assembling the So
 - Go to https://cad.onshape.com/documents/2586c4659ef3e7078e91168b/w/14abf4cb615429a14a2732cc/e/9ae9841864e78c02c4966c5e
 - Create an account which will allow you to pull files from the website
 - Download the TurtleBot 3 Burger assembly file onto your local drive
-- Make sure your assembly file(s) are in a dedicated CAD folder
+- Create a dedicated CAD folder and make sure your assembly file(s) are in there
 - Import the assembly file into SolidWorks
 
 ### Troubleshooting and rebuilding the bot
