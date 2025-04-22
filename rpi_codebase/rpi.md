@@ -39,7 +39,15 @@ export TURTLEBOT3_MODEL=burger
 alias rosbu='ros2 launch turtlebot3_bringup robot.launch.py & ros2 run ircam ircam_on'
 ```
 
-7. Create a symbolic link from `reload.py` into the home directory
+7. Create a symbolic link from `reload.py` into the home directory.
 ```bash
 ln -s ~/colcon_ws/src/ircam/ircam/reload.py ~
 ```
+
+8. Run code on the Raspberry Pi by just running `rosbu`.
+```bash
+source ~/.bashrc
+rosbu
+```
+
+9. The `rosbu` command spawns 2 processes. To properly terminate `rosbu`, execute Ctrl + C, `fg`, then Ctrl + C again. 
