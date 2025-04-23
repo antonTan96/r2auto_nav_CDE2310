@@ -27,5 +27,10 @@ The Maze Zone consists of 4 parts:
 ### Non-functional Requirements
 ### Constraints
 # Electrical Subsystem
+- [Electrical Documentation](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/elec_doc)
 # Mechanical Subsystem
-# Software Packages
+- [Mechanical Documentation](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/mech_doc)
+# Software Codebases
+- [Remote PC Codebase](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/remote_pc_codebase)
+- [Raspberry Pi Codebase](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/rpi_codebase)
+# More Documentation
