@@ -31,7 +31,24 @@ The Maze Zone consists of 4 parts:
 | Launch ping pong balls near heat sources | System shall have capability for launching 3 ping pong balls in a 2-4-2 delay pattern for each survivor, for a maximum of 3 survivors with 9 balls |
 | Recognise visited heat sources | System shall use location data to recognise heat sources that it has visited and not launch ping pong balls at the same survivor |
 ### Non-functional Requirements
+| **Category**        | **System Requirement**                                                                                   |
+|---------------------|----------------------------------------------------------------------------------------------------------|
+| **Performance**     | System shall accomplish the entire mission, including calibration of IR sensors, generation of SLAM map, within a time limit of 25 minutes. |
+| **Reliability**     | System shall operate reliably under various environmental conditions, including different maze configurations and lighting conditions. <br> System shall be resilient to sensor noise and external disturbances. |
+| **Safety**          | System shall prioritise safety during operation to prevent collisions with obstacles and map elements.    |
+| **Scalability**     | System shall be designed with scalability in mind to accommodate future enhancements or modifications. <br> System shall be capable of adapting to changes in maze layouts or task requirements. |
+| **Usability**       | System shall have a user-friendly interface for easy setup, operation, and monitoring by human operators. |
+| **Accuracy**        | System shall achieve high accuracy in map generation, obstacle detection, and task execution. <br> System shall minimise errors in localization and navigation to ensure precise performance. |
+| **Maintainability** | System shall be designed for ease of maintenance and repair. <br> System shall allow for quick diagnosis and replacement of any faulty components. |
+| **Power Efficiency**| System shall optimise power usage to prolong battery life by employing energy-efficient algorithms and hardware components. |
 ### Constraints
+| **Constraint**                    | **Description**                                                                                                                                                                  |
+|----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Power Supply Limitations**     | The robot must operate within constraints imposed by the power source, such as the battery capacity and voltage requirements.                                                   |
+| **Sensor and Actuator Limitations** | The selection and integration of sensors and actuators are constrained by factors such as cost, availability, and compatibility with the robot operating platform - ROS2   |
+| **Processing Power and Memory**  | The onboard processing capabilities and memory resources of the robot system component (Raspberry Pi) are limited, affecting the complexity and efficiency of algorithms.       |
+| **Environmental**                | Environmental factors such as ambient temperatures may affect sensor performance, navigation accuracy, and reliability. |
+| **Cost**                         | The development and deployment of the robot system are constrained by a budget limitation of $80. Cost-effective solutions and resource prioritization are essential.         |
 # Electrical Subsystem
 - [Electrical Documentation](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/elec_doc)
 # Mechanical Subsystem
