@@ -21,9 +21,15 @@ The Maze Zone consists of 4 parts:
 | Navigate towards heat sources | System shall have capability for identifying location and bearing of heat sources and navigate towards heat sources |
 | Launch ping pong balls near heat sources | System shall have capability for launching 3 ping pong balls in a 2-4-2 delay pattern for each survivor, for a maximum of 3 survivors with 9 balls |
 | Recognise visited heat sources | System shall recognise heat sources that it has visited and not launch ping pong balls at the same survivor |
-
-
 ### Functional Requirements
+| Mission Requirements | Functional Requirements |
+|----------|----------|
+| Traverse Map Autonomously    | System shall use Simultaneous Localization and Mapping to create a map of maze environment     |
+| Navigate through Maze autonomously    | System shall utilise developed map to promptly detect obstacles and navigate around them to ensure smooth traversal.     |
+| Identify heat sources | System shall use IR Camera to detect presence of heat soources  |
+| Navigate towards heat sources | System shall have capability for identifying location of heat sources via temperature data from IR Camera and localisation data from SLAM to navigate towards heat sources |
+| Launch ping pong balls near heat sources | System shall have capability for launching 3 ping pong balls in a 2-4-2 delay pattern for each survivor, for a maximum of 3 survivors with 9 balls |
+| Recognise visited heat sources | System shall use location data to recognise heat sources that it has visited and not launch ping pong balls at the same survivor |
 ### Non-functional Requirements
 ### Constraints
 # Electrical Subsystem
@@ -34,3 +40,5 @@ The Maze Zone consists of 4 parts:
 - [Remote PC Codebase](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/remote_pc_codebase)
 - [Raspberry Pi Codebase](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/rpi_codebase)
 # More Documentation
+- [User Guide](https://github.com/antonTan96/r2auto_nav_CDE2310/blob/main/general_doc/User%20Guide.pdf)
+- [Budget Breakdown](https://github.com/antonTan96/r2auto_nav_CDE2310/blob/main/general_doc/Budget%20Breakdown.xlsx)
