@@ -51,3 +51,29 @@ rosbu
 ```
 
 9. The `rosbu` command spawns 2 processes. To properly terminate `rosbu`, execute Ctrl + C, `fg`, then Ctrl + C again. 
+
+# Raspberry Pi Code Documentation
+
+The following section describes the high-level design of the flare-launching code of the Turtlebot ICBM.
+
+## Tunable Parameters
+
+* `ambient` : Temperature of surroundings with no heat source.
+
+## Attributes
+
+* `publisher_` : An `Int8` publisher that publishes to the `heatdir` topic. Signals where the heat source is.
+* `launch_subscriber` : A subscriber that subscribes to the `launch` topic.
+* `move_publisher` : An `Int8` publisher that publishes to the `move` topic. Signals to the navigation component that the Turtlebot ICBM can continue navigation.
+* `timer` : A timer that executes the `timer_callback` function periodically.
+* `img` : The heat map returned by the AMG IR camera.
+* `max_index` : The column index in `img` that contains the highest temperature value.
+* `max`, `min` : The maximum and minimum temperature value captured by the AMG IR camera.
+* `launch_servos` : The corresponding servo channels that control the launch tubes.
+
+## Methods
+
+* `launch_callback` : Manages the launching sequence of flares.
+* `timer_callback` : Periodically collects and processes data from the AMG IR camera.
+![flow chart diagram](./IR%20sensing%20flow%20chart%20diagram.png)
+
