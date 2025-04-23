@@ -52,10 +52,13 @@ The Maze Zone consists of 4 parts:
 
 # System Overview (TODO)
 ## High Level Concept
+![image](https://github.com/user-attachments/assets/6d46b0d1-4d58-4254-a3af-e8cf655599b5)
+
 ![image](https://github.com/user-attachments/assets/a5fae769-6c52-4238-b840-5f4d292ab051)
 Building upon the Turtlebot frame, we utilise an IR Camera to identify heat sources in the maze and a spring launcher mechanism actuated by servos to launch the ping pong balls upon detection and navigation to the survivor.
 ## High Level Algorithm
 ![image](https://github.com/user-attachments/assets/2841cfe0-a33c-4b37-a0d7-b50b7e4c347b)
+![image](https://github.com/user-attachments/assets/f210a045-70a0-42b1-8de7-d4162eecaf18)
 
 # Electrical Subsystem
 - [Electrical Documentation](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/elec_doc)
