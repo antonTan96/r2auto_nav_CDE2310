@@ -49,6 +49,10 @@ The Maze Zone consists of 4 parts:
 | **Processing Power and Memory**  | The onboard processing capabilities and memory resources of the robot system component (Raspberry Pi) are limited, affecting the complexity and efficiency of algorithms.       |
 | **Environmental**                | Environmental factors such as ambient temperatures may affect sensor performance, navigation accuracy, and reliability. |
 | **Cost**                         | The development and deployment of the robot system are constrained by a budget limitation of $80. Cost-effective solutions and resource prioritization are essential.         |
+
+# System Overview (TODO)
+## High Level Concept
+## High Level Algorithm
 # Electrical Subsystem
 - [Electrical Documentation](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/elec_doc)
 # Mechanical Subsystem
