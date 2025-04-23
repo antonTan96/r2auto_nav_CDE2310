@@ -61,7 +61,15 @@ Building upon the Turtlebot frame, we utilise an IR Camera to identify heat sour
 ![image](https://github.com/user-attachments/assets/f210a045-70a0-42b1-8de7-d4162eecaf18)
 
 ## Technical Specifications
-![image](https://github.com/user-attachments/assets/93d1ec12-7c86-4a0a-b7c6-b1fb4e20a54b)
+| **Technical Components** | **Details**                                                                                       |
+|--------------------------|---------------------------------------------------------------------------------------------------|
+| **Model**                | TurtleBot3 Burger ICBM V1.2                                                                       |
+| **Software Version**     | 1.4.7                                                                                             |
+| **Weight**               | 1606.63g                                                                                          |
+| **Battery Capacity**     | Lithium polymer 11.1V 1800mAh / 19.98Wh                                                           |
+| **Max Runtime**          | 1.5 – 2 hours                                                                                     |
+| **Charging Time**        | ~2.5 hours                                                                                        |
+| **Purpose**              | 1. To autonomously navigate the maze and avoid obstacles<br>2. Successfully find 3 heat signatures<br>3. Launches ping pong balls at predetermined intervals when heat signature found |
 
 
 # Electrical Subsystem
