@@ -60,6 +60,10 @@ Building upon the Turtlebot frame, we utilise an IR Camera to identify heat sour
 ![image](https://github.com/user-attachments/assets/2841cfe0-a33c-4b37-a0d7-b50b7e4c347b)
 ![image](https://github.com/user-attachments/assets/f210a045-70a0-42b1-8de7-d4162eecaf18)
 
+## Technical Specifications
+![image](https://github.com/user-attachments/assets/93d1ec12-7c86-4a0a-b7c6-b1fb4e20a54b)
+
+
 # Electrical Subsystem
 - [Electrical Documentation](https://github.com/antonTan96/r2auto_nav_CDE2310/tree/main/elec_doc)
 # Mechanical Subsystem
