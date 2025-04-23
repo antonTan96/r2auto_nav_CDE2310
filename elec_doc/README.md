@@ -25,6 +25,7 @@
 | AMG8833          | 8 x 8            | 80°      | ± 2.5                   | 0 – 80              | I2C                | ~30             |
 | MLX90640BAA      | 32 x 24          | 110°     | ± 2                     | -40 – 300           | I2C                | ~50             |
 | MLX90640BAB      | 32 x 24          | 55°      | ± 2                     | -40 – 300           | I2C                | ~50             |
+
 Initial selection was of MLX90640BAA based on the following rationale:
 ![image](https://github.com/user-attachments/assets/514c6c86-3d02-4ab1-abd0-d084bef3e5c8)
 **Selection of SG90 Servos**
