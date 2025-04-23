@@ -50,7 +50,7 @@ The Maze Zone consists of 4 parts:
 | **Environmental**                | Environmental factors such as ambient temperatures may affect sensor performance, navigation accuracy, and reliability. |
 | **Cost**                         | The development and deployment of the robot system are constrained by a budget limitation of $80. Cost-effective solutions and resource prioritization are essential.         |
 
-# System Overview (TODO)
+# System Overview
 ## High Level Concept
 ![image](https://github.com/user-attachments/assets/6d46b0d1-4d58-4254-a3af-e8cf655599b5)
 
